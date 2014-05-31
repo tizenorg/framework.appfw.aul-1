@@ -1,0 +1,7 @@
+#!/bin/sh
+mkdir /tmp/alaunch
+chmod 1777 /tmp/alaunch
+
+
+/usr/bin/amd &
+/usr/bin/launchpad_preloading_preinitializing_daemon "                                                                                                                                                                                                         " &

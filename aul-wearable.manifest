@@ -1,0 +1,23 @@
+<manifest>
+	<define>
+		<domain name="aul"/>
+		<request>
+			<smack request="aul::launch" type="x"/>
+			<smack request="aul::terminate" type="x"/>
+			<smack request="security-server::api-privilege-by-pid" type="w"/>
+			<smack request="deviced::display" type="rw"/>
+		</request>
+		<provide>
+			<label name="aul::db"/>
+			<label name="aul::launch"/>
+			<label name="aul::terminate"/>
+		</provide>
+	</define>
+	<assign>
+		<filesystem path="/usr/lib/libaul.so.0" label="_"/>
+		<filesystem path="/usr/lib/libaul.so.0.1.0" label="_"/>
+	</assign>
+	<request>
+		<domain name="aul"/>
+	</request>
+</manifest>

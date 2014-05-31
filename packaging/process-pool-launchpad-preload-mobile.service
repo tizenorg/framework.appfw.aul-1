@@ -1,0 +1,10 @@
+[Unit]
+Description=Start the Access Control server
+After=dbus.service vconf-setup.service ac.service
+
+[Service]
+EnvironmentFile=/run/tizen-mobile-ui
+ExecStart=/usr/bin/process_pool_launchpad_preloading_preinitializing_daemon "                                                                                                                                                                                                         "
+
+[Install]
+WantedBy=multi-user.target
