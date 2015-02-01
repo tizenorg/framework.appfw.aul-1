@@ -37,6 +37,7 @@
 #include <poll.h>
 #include <sys/prctl.h>
 #include <malloc.h>
+#include <sys/resource.h>
 
 #include "app_sock.h"
 #include "aul.h"
@@ -132,14 +133,11 @@ _static_ int __prepare_exec(const char *pkg_name,
 	__preexec_run(menu_info->pkg_type, pkg_name, app_path);
 
 	/* SET PRIVILEGES*/
-	if(bundle_get_val(kb, AUL_K_PRIVACY_APPID) == NULL) {
-		 _D("pkg_name : %s / pkg_type : %s / app_path : %s ", pkg_name, menu_info->pkg_type, app_path);
-		if ((ret = __set_access(pkg_name, menu_info->pkg_type, app_path)) < 0) {
-			 _D("fail to set privileges - check your package's credential : %d\n", ret);
-			return -1;
-		}
+	SECURE_LOGD("pkg_name : %s / pkg_type : %s / app_path : %s ", pkg_name, menu_info->pkg_type, app_path);
+	if ((ret = __set_access(pkg_name, menu_info->pkg_type, app_path)) < 0) {
+		 _D("fail to set privileges - check your package's credential : %d\n", ret);
+		return -1;
 	}
-
 	/* SET DUMPABLE - for coredump*/
 	prctl(PR_SET_DUMPABLE, 1);
 
@@ -191,6 +189,14 @@ _static_ int __normal_fork_exec(int argc, char **argv)
 {
 	_D("start real fork and exec\n");
 
+#ifdef _APPFW_FEATURE_PRIORITY_CHANGE
+	int res = setpriority(PRIO_PROCESS, 0, 0);
+	if (res == -1)
+	{
+		SECURE_LOGE("Setting process (%d) priority to 0 failed, errno: %d (%s)",
+				getpid(), errno, strerror(errno));
+	}
+#endif
 	if (execv(argv[0], argv) < 0) {	/* Flawfinder: ignore */
 		if (errno == EACCES)
 			_E("such a file is no executable - %s", argv[0]);
@@ -333,7 +339,15 @@ _static_ void __modify_bundle(bundle * kb, int caller_pid,
 	bundle_del(kb, AUL_K_TASKMANAGE);
 
 	/* Parse app_path to retrieve default bundle*/
-	if (cmd == APP_START || cmd == APP_START_RES || cmd == APP_START_ASYNC || cmd == APP_OPEN || cmd == APP_RESUME) {
+	if (cmd == APP_START
+		|| cmd == APP_START_RES
+		|| cmd == APP_START_ASYNC
+#ifdef _APPFW_FEATURE_MULTI_INSTANCE
+		|| cmd == APP_START_MULTI_INSTANCE
+#endif
+		|| cmd == APP_OPEN
+		|| cmd == APP_RESUME
+		) {
 		char *ptr;
 		char exe[MAX_PATH_LEN];
 		int flag;
@@ -739,8 +753,7 @@ _static_ int __launchpad_pre_init(int argc, char **argv)
 
 	__preload_init(argc, argv);
 
-	/* preexec is not used */
-	//__preexec_init(argc, argv);
+//	__preexec_init(argc, argv);
 
 	return fd;
 }
@@ -781,6 +794,14 @@ int main(int argc, char **argv)
 	pfds[0].events = POLLIN;
 	pfds[0].revents = 0;
 
+#ifdef _APPFW_FEATURE_PRIORITY_CHANGE
+	int res = setpriority(PRIO_PROCESS, 0, -12);
+	if (res == -1)
+	{
+		SECURE_LOGE("Setting process (%d) priority to -12 failed, errno: %d (%s)",
+				getpid(), errno, strerror(errno));
+	}
+#endif
 	while (1) {
 		if (poll(pfds, POLLFD_MAX, -1) < 0)
 			continue;

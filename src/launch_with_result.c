@@ -45,6 +45,10 @@ typedef struct _app_resultcb_info_t {
 
 static int latest_caller_pid = -1;
 static app_resultcb_info_t *rescb_head = NULL;
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+static app_resultcb_info_t *rescb_head2 = NULL;
+#endif
+
 
 static int is_subapp = 0;
 subapp_fn subapp_cb = NULL;
@@ -83,18 +87,19 @@ static void __add_resultcb(int pid, void (*cbfunc) (bundle *, int, void *),
 static app_resultcb_info_t *__find_resultcb(int pid)
 {
 	app_resultcb_info_t *tmp;
+	app_resultcb_info_t *ret = NULL;
 
 	pthread_mutex_lock(&result_lock);
 	tmp = rescb_head;
 	while (tmp) {
 		if (tmp->launched_pid == pid) {
-			pthread_mutex_unlock(&result_lock);
-			return tmp;
+			ret = tmp;
 		}
 		tmp = tmp->next;
 	}
 	pthread_mutex_unlock(&result_lock);
-	return NULL;
+
+	return ret;
 }
 
 static void __remove_resultcb(app_resultcb_info_t *info)
@@ -120,6 +125,71 @@ static void __remove_resultcb(app_resultcb_info_t *info)
 		tmp = tmp->next;
 	}
 }
+
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+static void __add_resultcb2(int pid, void (*cbfunc) (bundle *, int, void *),
+			 void *data)
+{
+	app_resultcb_info_t *info;
+
+	_D("id : %d", pid);
+
+	info = (app_resultcb_info_t *) malloc(sizeof(app_resultcb_info_t));
+	if(info == NULL)
+		return;
+	info->launched_pid = pid;
+	info->cb_func = cbfunc;
+	info->priv_data = data;
+	info->caller_cb = NULL;
+	info->caller_data = NULL;
+
+	info->next = rescb_head2;
+	rescb_head2 = info;
+}
+
+static app_resultcb_info_t *__find_resultcb2(int pid)
+{
+	app_resultcb_info_t *tmp;
+	app_resultcb_info_t *ret = NULL;
+
+	pthread_mutex_lock(&result_lock);
+	tmp = rescb_head2;
+	while (tmp) {
+		_D("id_id : %d", tmp->launched_pid);
+		if (tmp->launched_pid == pid) {
+			ret = tmp;
+		}
+		tmp = tmp->next;
+	}
+	pthread_mutex_unlock(&result_lock);
+
+	return ret;
+}
+
+static void __remove_resultcb2(app_resultcb_info_t *info)
+{
+	app_resultcb_info_t *tmp;
+
+	if (rescb_head2 == NULL || info == NULL)
+		return;
+
+	if (rescb_head2 == info) {
+		rescb_head2 = info->next;
+		free(info);
+		return;
+	}
+
+	tmp = rescb_head2;
+	while (tmp) {
+		if (tmp->next == info) {
+			tmp->next = info->next;
+			free(info);
+			return;
+		}
+		tmp = tmp->next;
+	}
+}
+#endif
 
 /**
  * call result callback function
@@ -151,8 +221,31 @@ static int __call_app_result_callback(bundle *kb, int is_cancel,
 		return -1;
 
 	/* In case of aul_forward_app, update the callback data */
-	if(is_cancel == 1 &&
-	(fwdpid_str = (char *)bundle_get_val(kb, AUL_K_FWD_CALLEE_PID)))
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+	if(is_cancel == 1 && (fwdpid_str = (char *)bundle_get_val(kb, "__AUL_FWD_UG_ID__")))
+	{
+		app_resultcb_info_t newinfo;
+		newinfo.launched_pid = atoi(fwdpid_str);
+		newinfo.cb_func = info->cb_func;
+		newinfo.priv_data = info->priv_data;
+		newinfo.caller_cb = NULL;
+		newinfo.caller_data = NULL;
+
+		if(info->caller_cb) {
+			info->caller_cb(newinfo.launched_pid, info->caller_data);
+		}
+
+		__remove_resultcb(info);
+		__add_resultcb2(newinfo.launched_pid, newinfo.cb_func, newinfo.priv_data);
+
+		_D("change callback __AUL_FWD_UG_ID__ - %d\n", newinfo.launched_pid);
+
+		goto end;
+	}
+	else if(is_cancel == 1 && (fwdpid_str = (char *)bundle_get_val(kb, AUL_K_FWD_CALLEE_PID)))
+#else
+	if(is_cancel == 1 && (fwdpid_str = (char *)bundle_get_val(kb, AUL_K_FWD_CALLEE_PID)))
+#endif
 	{
 		app_resultcb_info_t newinfo;
 		newinfo.launched_pid = atoi(fwdpid_str);
@@ -277,6 +370,10 @@ SLPAPI int aul_launch_app_with_result(const char *pkgname, bundle *kb,
 			       void *data)
 {
 	int ret;
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+	int id = -1;
+	char id_str[256] = {0, };
+#endif
 
 	if (!aul_is_initialized()) {
 		if (aul_launch_init(NULL, NULL) < 0)
@@ -287,10 +384,21 @@ SLPAPI int aul_launch_app_with_result(const char *pkgname, bundle *kb,
 		return AUL_R_EINVAL;
 
 	pthread_mutex_lock(&result_lock);
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+	id = rand();
+	sprintf(id_str, "%d", id);
+	bundle_add(kb, "__AUL_UG_ID__", id_str);
+#endif
 	ret = app_request_to_launchpad(APP_START_RES, pkgname, kb);
-
 	if (ret > 0)
 		__add_resultcb(ret, cbfunc, data);
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+	else if (ret == AUL_R_UG_LOCAL) {
+		__add_resultcb2(id, cbfunc, data);
+		pthread_mutex_unlock(&result_lock);
+		return getpid();
+	}
+#endif
 	pthread_mutex_unlock(&result_lock);
 
 	return ret;
@@ -309,6 +417,10 @@ SLPAPI int aul_forward_app(const char* pkgname, bundle *kb)
 	bundle *dupb;
 	bundle *outb;
 	char tmp_pid[MAX_PID_STR_BUFSZ];
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+	int caller_pid;
+	int callee_pid;
+#endif
 
 	if(pkgname == NULL || kb == NULL)
 		return AUL_R_EINVAL;
@@ -321,6 +433,10 @@ SLPAPI int aul_forward_app(const char* pkgname, bundle *kb)
 
 	bundle_del(kb, AUL_K_ORG_CALLER_PID);
 	bundle_add(kb, AUL_K_ORG_CALLER_PID, caller);
+
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+	caller_pid = atoi(caller);
+#endif
 
 	dupb = bundle_dup(kb);
 	if(dupb == NULL) {
@@ -337,7 +453,9 @@ SLPAPI int aul_forward_app(const char* pkgname, bundle *kb)
 		goto end;
 	}
 
-//	bundle_iterate(dupb, __iterate, NULL);
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+	callee_pid = ret;
+#endif
 
 	snprintf(tmp_pid, MAX_PID_STR_BUFSZ,"%d",ret);
 
@@ -345,8 +463,20 @@ SLPAPI int aul_forward_app(const char* pkgname, bundle *kb)
 	if(ret < 0)
 		goto end;
 
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+	_D("callee_pid(%d) caller_pid(%d)", callee_pid, caller_pid);
+
+	if(callee_pid == caller_pid) {
+		bundle_del(outb, AUL_K_FWD_CALLEE_PID);
+		bundle_add(outb, "__AUL_FWD_UG_ID__", bundle_get_val(kb, "__AUL_UG_ID__"));
+	} else {
+		bundle_del(outb, AUL_K_FWD_CALLEE_PID);
+		bundle_add(outb, AUL_K_FWD_CALLEE_PID, tmp_pid);
+	}
+#else
 	bundle_del(outb, AUL_K_FWD_CALLEE_PID);
 	bundle_add(outb, AUL_K_FWD_CALLEE_PID, tmp_pid);
+#endif
 
 //	bundle_iterate(outb, __iterate, NULL);
 
@@ -520,3 +650,21 @@ SLPAPI int aul_remove_caller_cb(int pid)
 
 	return 0;
 }
+
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+SLPAPI int aul_call_ug_result_callback(bundle *kb, int is_cancel, int id)
+{
+	app_resultcb_info_t *info;
+	int pgid;
+
+	info = __find_resultcb2(id);
+
+	_D("id : %d", id);
+
+	info->cb_func(kb, is_cancel, info->priv_data);
+	__remove_resultcb2(info);
+
+	return 0;
+}
+#endif
+

@@ -32,6 +32,7 @@
 typedef struct _app_status_info_t{
 	char appid[MAX_PACKAGE_STR_SIZE];
 	char app_path[MAX_PACKAGE_APP_PATH_SIZE];
+	char caller[MAX_PACKAGE_STR_SIZE];
 	int status;
 	int pid;
 	int pad_pid;

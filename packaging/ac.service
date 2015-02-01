@@ -3,14 +3,11 @@ Description=Start the Access Control server
 After=dbus.service vconf-setup.service
 
 [Service]
-EnvironmentFile=/run/tizen-mobile-ui
+EnvironmentFile=/run/tizen-mobile-env
 ExecStartPre=-/bin/mkdir /tmp/alaunch
 ExecStartPre=/bin/chmod 1777 /tmp/alaunch
-ExecStartPre=/usr/bin/chsmack -a '*' /tmp/alaunch
+ExecStartPre=/usr/bin/chsmack -a "*" /tmp/alaunch
 ExecStart=/usr/bin/amd
-TimeoutStopSec=3s
-Restart=always
-RestartSec=0
 
 [Install]
 WantedBy=multi-user.target

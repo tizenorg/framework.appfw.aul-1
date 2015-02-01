@@ -3,15 +3,9 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-#ifdef WEARABLE_PROFILE
 #define DAEMON_MANAGER_NAME "com.samsung.DaemonManager"
 #define DAEMON_MANAGER_PATH "/com/samsung/DaemonManager"
 #define DAEMON_MANAGER_INTERFACE "com.samsung.DaemonManager"
-#else
-#define DAEMON_MANAGER_NAME "org.tizen.DaemonManager"
-#define DAEMON_MANAGER_PATH "/org/tizen/DaemonManager"
-#define DAEMON_MANAGER_INTERFACE "org.tizen.DaemonManager"
-#endif
 
 #define METHOD_RELEASED "Start"
 

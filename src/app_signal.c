@@ -21,10 +21,12 @@
 
 
 #include <stdio.h>
+
 #include "app_signal.h"
 #include "aul_api.h"
 #include "simple_util.h"
 #include "aul.h"
+
 
 static int (*_app_dead_handler) (int pid, void *data);
 static void *_app_dead_data;
@@ -35,6 +37,17 @@ static void *_app_launch_data;
 static int (*_booting_done_handler) (int pid, void *data);
 static void *_booting_done_data;
 
+static int (*_status_handler) (int pid, int status, void *data);
+static void *_status_data;
+
+static int (*_cooldown_handler) (const char *cooldown_status, void *data);
+static void *_cooldown_data;
+
+#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
+static int (*_lcd_status_handler) (const char *lcd_status, void *data);
+static void *_lcd_status_data;
+#endif
+
 static DBusConnection *bus;
 static int app_dbus_signal_handler_initialized = 0;
 
@@ -44,7 +57,9 @@ __app_dbus_signal_filter(DBusConnection *conn, DBusMessage *message,
 {
 	const char *sender;
 	const char *interface;
+	const char *cooldown_status;
 	int pid;
+	int status;
 
 	DBusError error;
 	dbus_error_init(&error);
@@ -53,11 +68,11 @@ __app_dbus_signal_filter(DBusConnection *conn, DBusMessage *message,
 	if (sender == NULL)
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
-	if (dbus_bus_get_unix_user(conn, sender, &error) != 0) {
+	/*if (dbus_bus_get_unix_user(conn, sender, &error) != 0) {
 		_E("reject by security issue - no allowed sender\n");
 		dbus_error_free(&error);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-	}
+	}*/
 
 	interface = dbus_message_get_interface(message);
 	if (interface == NULL) {
@@ -89,7 +104,38 @@ __app_dbus_signal_filter(DBusConnection *conn, DBusMessage *message,
 	  message, interface, SYSTEM_SIGNAL_BOOTING_DONE)) {
 		if (_booting_done_handler)
 			_booting_done_handler(pid, _booting_done_data);
+	} else if (dbus_message_is_signal(
+	  message, interface, RESOURCED_SIGNAL_PROCESS_STATUS)) {
+		if (dbus_message_get_args(message, &error, DBUS_TYPE_INT32,&status,
+			DBUS_TYPE_INT32,&pid, DBUS_TYPE_INVALID) == FALSE) {
+			_E("Failed to get data: %s", error.message);
+			dbus_error_free(&error);
+			return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+		}
+		if (_status_handler)
+			_status_handler(pid, status, _status_data);
+	} else if (dbus_message_is_signal(
+	  message, interface, SYSTEM_SIGNAL_COOLDOWN_CHANGED)) {
+		if (dbus_message_get_args(message, &error, DBUS_TYPE_STRING, &cooldown_status,
+			DBUS_TYPE_INVALID) == FALSE) {
+			_E("Failed to get data: %s", error.message);
+			dbus_error_free(&error);
+			return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+		}
+		if (_cooldown_handler)
+			_cooldown_handler(cooldown_status, _cooldown_data);
 	}
+#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
+	else if (dbus_message_is_signal(
+	  message, interface, DEVICED_SIGNAL_LCD_ON)) {
+		if (_lcd_status_handler)
+			_lcd_status_handler(DEVICED_SIGNAL_LCD_ON, _lcd_status_data);
+	} else if (dbus_message_is_signal(
+	  message, interface, DEVICED_SIGNAL_LCD_OFF)) {
+		if (_lcd_status_handler)
+			_lcd_status_handler(DEVICED_SIGNAL_LCD_OFF, _lcd_status_data);
+	}
+#endif
 
 	return DBUS_HANDLER_RESULT_HANDLED;
 }
@@ -133,8 +179,10 @@ int __app_dbus_signal_handler_init_with_param(const char* path, const char* inte
 	}
 
 	if (dbus_connection_add_filter(bus, 
-		__app_dbus_signal_filter, NULL, NULL) == FALSE)
+		__app_dbus_signal_filter, NULL, NULL) == FALSE) {
+		_E("add filter fail");
 		return -1;
+	}
 
 	_D("app signal initialized");
 
@@ -237,6 +285,114 @@ SLPAPI int aul_listen_booting_done_signal(int (*func) (int, void *), void *data)
 	_booting_done_data = data;
 
 	return AUL_R_OK;
+
+}
+
+SLPAPI int aul_listen_cooldown_signal(int (*func) (const char *, void *), void *data)
+{
+	if (func) {
+		if (__app_dbus_signal_handler_init_with_param(SYSTEM_PATH_SYSNOTI, SYSTEM_INTERFACE_SYSNOTI) < 0) {
+			_E("error app signal init");
+			return AUL_R_ERROR;
+		}
+	} else if (_cooldown_handler == NULL) {
+		if (__app_dbus_signal_handler_fini_with_param(SYSTEM_PATH_SYSNOTI, SYSTEM_INTERFACE_SYSNOTI) < 0) {
+			_E("error app signal fini");
+			return AUL_R_ERROR;
+		}
+	}
+	_cooldown_handler = func;
+	_cooldown_data = data;
+
+	return AUL_R_OK;
+
+}
+
+SLPAPI int aul_listen_e17_status_signal(int (*func) (int, int, void *), void *data)
+{
+	if (func) {
+		if (__app_dbus_signal_handler_init_with_param(RESOURCED_PATH_CORE, RESOURCED_INTERFACE_CORE) < 0) {
+			_E("error app signal init");
+			return AUL_R_ERROR;
+		}
+	}
+	_status_handler = func;
+	_status_data = data;
+
+	return AUL_R_OK;
+}
+
+#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
+SLPAPI int aul_listen_lcd_status_signal(int (*func) (const char *, void *), void *data)
+{
+	if (func) {
+		if (__app_dbus_signal_handler_init_with_param(DEVICED_PATH_DISPLAY, DEVICED_INTERFACE_DISPLAY) < 0) {
+			_E("error app signal init");
+			return AUL_R_ERROR;
+		}
+	}
+	_lcd_status_handler = func;
+	_lcd_status_data = data;
+
+	return AUL_R_OK;
+}
+#endif
+
+SLPAPI int aul_update_freezer_status(int pid, const char* type)
+{
+	DBusError err;
+	DBusConnection* conn = NULL;
+	DBusMessage* msg = NULL;
+	dbus_uint32_t serial = 0;
+
+	int ret = -1;
+
+	dbus_error_init(&err);
+
+	conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
+	if (!conn) {
+		_E("Fail to dbus_bus_get : %s", err.message);
+		return -1;
+	}
+
+	msg = dbus_message_new_signal(RESOURCED_PROC_OBJECT,
+			RESOURCED_PROC_INTERFACE,
+			RESOURCED_PROC_METHOD);
+	if (!msg) {
+		_E("Could not create DBus Message.");
+		ret = -1;
+		goto end;
+	}
+
+	if (!dbus_message_append_args(msg,
+			DBUS_TYPE_STRING, &type,
+			DBUS_TYPE_INT32, &pid,
+			DBUS_TYPE_INVALID)) {
+		_E("Failed to append a D-Bus Message.");
+		ret = -1;
+	}
+
+	_D("Send a freezer signal pid: %d, type: %s", pid, type);
+
+	if (!dbus_connection_send(conn, msg, &serial)) {
+		_E("Failed to send a D-Bus Message.");
+		ret = -1;
+	}
+
+	dbus_connection_flush(conn);
+
+end:
+	dbus_error_free(&err);
+
+	if (msg) {
+		dbus_message_unref(msg);
+	}
+
+	if (conn) {
+		dbus_connection_unref(conn);
+	}
+
+	return ret;
 
 }
 

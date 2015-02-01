@@ -177,6 +177,13 @@ int term_pid_test()
 	return aul_terminate_pid(apn_pid);
 }
 
+int term_pid_without_restart_test()
+{
+	static int num = 0;
+	printf("[aul_term_pid_without_restart %d test] %d \n", num++, apn_pid);
+	return aul_terminate_pid_without_restart(apn_pid);
+}
+
 int term_req_pid_test()
 {
 	static int num = 0;
@@ -272,42 +279,6 @@ int get_pkgpid_test()
 		printf("pkgname = %s, pid = %d\n", buf, pid);
 
 	return 0;
-}
-
-int open_file_test()
-{
-	static int num = 0;
-	printf("[aul_open_file %d test] %s \n", num++, gargv[2]);
-	return aul_open_file(gargv[2]);
-}
-
-int open_content_test()
-{
-	static int num = 0;
-	printf("[aul_open_content %d test] %s \n", num++, gargv[2]);
-	return aul_open_content(gargv[2]);
-}
-
-int get_defapp_test()
-{
-	static int num = 0;
-	int ret;
-	char buf[MAX_LOCAL_BUFSZ];
-	printf("[aul_get_defapp_from_mime %d test] %s \n", num++, gargv[2]);
-	ret = aul_get_defapp_from_mime(gargv[2], buf, sizeof(buf));
-	if (ret >= 0)
-		printf("==> defapp name = %s\n", buf);
-	return ret;
-}
-
-int set_defapp_test()
-{
-	static int num = 0;
-	int ret;
-	printf("[aul_set_defapp_with_mime %d test] %s %s\n", num++, gargv[2],
-	       gargv[3]);
-	ret = aul_set_defapp_with_mime(gargv[2], gargv[3]);
-	return ret;
 }
 
 int get_mime_file_test()
@@ -408,10 +379,10 @@ static int set_pkg_func()
 
 	pkgname = gargv[2];
 	apppath = gargv[3];
-	
+
 	appname = strrchr(apppath,'/')+1;
 	snprintf(ai.app_icon_path, PATH_LEN, "aul_test_icon_path/%d",getpid());
-	snprintf(ai.desktop_path, PATH_LEN, 
+	snprintf(ai.desktop_path, PATH_LEN,
 		"aul_test_desktop_path/%d",getpid());
 
 	snprintf (query, sizeof(query), "insert into "TABLE_MENU"(\
@@ -483,90 +454,6 @@ static int test_regex()
 	return 0;
 }
 
-int open_svc_test()
-{
-	static int num = 0;
-	int ret;
-
-	bundle *kb = NULL;
-	kb = create_internal_bundle(3);
-	if (kb == NULL) {
-		printf("bundle creation fail\n");
-		return -1;
-	}
-	printf("[aul_open_service %d test] %s \n", num++, gargv[2]);
-	ret = aul_open_service(gargv[2], kb, NULL, NULL);
-	if (ret >= 0) {
-		printf("open service success\n");
-		if (kb) {
-			bundle_free(kb);
-			kb = NULL;
-		}
-		return 0;
-	} else {
-		printf("open service fail\n");
-		if (kb) {
-			bundle_free(kb);
-			kb = NULL;
-		}
-		return -1;
-	}
-}
-
-int open_svc_res_test()
-{
-	static int num = 0;
-	int ret;
-
-	bundle *kb = NULL;
-	kb = create_internal_bundle(3);
-	if (kb == NULL) {	/* Prevent Fix: ID: 21027,21581 */
-		printf("bundle creation fail\n");
-		return -1;
-	}
-
-	printf("[aul_open_service(wait result) %d test] %s \n", num++,
-	       gargv[2]);
-	ret = aul_open_service(gargv[2], kb, cb_func, (void *)num);
-	if (ret >= 0) {
-		printf("open service(wait result) success\n");
-		if (kb) {
-			bundle_free(kb);
-			kb = NULL;
-		}
-		return 0;
-	} else {
-		printf("open service(wait result) fail\n");
-		if (kb) {
-			bundle_free(kb);
-			kb = NULL;
-		}
-		return -1;
-	}
-}
-
-int get_defapp_svc_test()
-{
-	static int num = 0;
-	int ret;
-	char buf[MAX_LOCAL_BUFSZ];
-	printf("[aul_get_defapp_from_svc %d test] %s \n", num++, gargv[2]);
-	ret = aul_get_defapp_for_service(gargv[2], buf, sizeof(buf));
-	if (ret >= 0)
-		printf("==> defapp name = %s\n", buf);
-	return ret;
-}
-
-int set_defapp_svc_test()
-{
-	static int num = 0;
-	int ret;
-	printf("[aul_set_defapp_with_svc %d test] %s %s\n", num++, gargv[2],
-	       gargv[3]);
-	ret = aul_set_defapp_for_service(gargv[2], gargv[3]);
-	return ret;
-}
-
 static test_func_t test_func[] = {
 	{"launch",launch_test,"aul_launch_app test",
 		"[usage] launch <pkgname> <key1> <val1> <key2> <val2> ..."},
@@ -580,6 +467,8 @@ static test_func_t test_func[] = {
 		"[usage] resume_pid <pid>" },
 	{"term_pid", term_pid_test,"aul_terminate_pid test",
 		"[usage] term_pid <pid>" },
+	{"term_pid_without_restart", term_pid_without_restart_test,"aul_terminate_pid_without_restart test",
+		"[usage] term_pid_without_restart <pid>" },
 	{"term_req_pid", term_req_pid_test,"aul_subapp_terminate_request_pid test",
 		"[usage] term_req_pid <pid>" },
 	{"dbuslaunch", dbus_launch_test,"launch by dbus auto activation",
@@ -593,15 +482,7 @@ static test_func_t test_func[] = {
 		"[usage] getallpkg all"},
 	{"getpkgpid", get_pkgpid_test, "aul_app_get_appid_bypid test",
 		"[usage] getpkgpid <pid>"},
-	
-	{"open_file", open_file_test, "aul_open_file test",
-		"[usage] open_file <filename>"},
-	{"open_content", open_content_test, "aul_open_content test",
-		"[usage] open_content <content>"},
-	{"get_defapp_mime", get_defapp_test, "aul_get_defapp_from_mime test",
-		"[usage] get_defapp_mime <mime_type>"},
-	{"set_defapp_mime", set_defapp_test, "aul_set_defapp_with_mime test",
-		"[usage] set_defapp_mime <mime_type> <defapp to be set>"},
+
 	{"get_mime_file", get_mime_file_test, "aul_get_mime_from_file test",
 		"[usage] get_mime_file <filename>"},
 	{"get_mime_content", get_mime_content_test, "aul_get_mime_from_content",
@@ -617,15 +498,6 @@ static test_func_t test_func[] = {
 	{"test_regex", test_regex, "regular expression parser test",
 		"[usage] test_regex <full text>"},
 
-	{"open_svc", open_svc_test, "aul_open_service test"
-		"[usage] open_svc <svcname> <key1> <val1> <key2> <val2> ..."},
-	{"open_svc_res", open_svc_res_test, "aul_open_service (wait result) test"
-		"[usage] open_svc <svcname> <key1> <val1> <key2> <val2> ..."},
-	{"set_defapp_svc", set_defapp_svc_test, "aul_set_defapp_with_svc test"
-		"[usage] set_defapp_svc <svcname> <defapp to be set>"},
-	{"get_defapp_svc", get_defapp_svc_test, "aul_get_defapp_from_svc test"
-		"[usage] get_defapp_svc <svcname>"},
-	
 	{"getpkg", get_pkg_func, "get package",
 	      	"[usage] getpkg <pkgname>"},
 	{"update_list", update_running_list, "update running list",

@@ -66,11 +66,11 @@ int __create_server_sock(int pid)
 		if (errno == EINVAL) {
 			fd = socket(AF_UNIX, SOCK_STREAM, 0);
 			if (fd < 0) {
-				_E("second chance - socket create error");
+				_E("second chance - socket create error: %d", errno);
 				return -1;
 			}
 		} else {
-			_E("socket error");
+			_E("socket error: %d", errno);
 			return -1;
 		}
 	}
@@ -103,7 +103,7 @@ int __create_server_sock(int pid)
 	}
 
 	if (bind(fd, (struct sockaddr *)&saddr, sizeof(saddr)) < 0) {
-		_E("bind error");
+		_E("bind error: %d", errno);
 		close(fd);
 		return -1;
 	}
@@ -118,7 +118,7 @@ int __create_server_sock(int pid)
 	__set_sock_option(fd, 0);
 
 	if (listen(fd, 128) == -1) {
-		_E("listen error");
+		_E("listen error: %d", errno);
 		close(fd);
 		return -1;
 	}
@@ -149,17 +149,17 @@ int __create_client_sock(int pid)
 	int retry = 2;
 	int ret = -1;
 
-	fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);	
+	fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	/*  support above version 2.6.27*/
 	if (fd < 0) {
 		if (errno == EINVAL) {
 			fd = socket(AF_UNIX, SOCK_STREAM, 0);
 			if (fd < 0) {
-				_E("second chance - socket create error");
+				_E("second chance - socket create error: %d", errno);
 				return -1;
 			}
 		} else {
-			_E("socket error");
+			_E("socket error: %d", errno);
 			return -1;
 		}
 	}
@@ -170,7 +170,7 @@ int __create_client_sock(int pid)
 	ret = __connect_client_sock(fd, (struct sockaddr *)&saddr, sizeof(saddr),
 			100 * 1000);
 	if (ret < -1) {
-		_E("maybe peer not launched or peer daed\n");
+		_E("cannot connect the client socket: %d", errno);
 		if (retry > 0) {
 			usleep((1+2*(2-retry))*100 * 1000);
 			retry--;
@@ -204,7 +204,8 @@ static int __connect_client_sock(int fd, const struct sockaddr *saptr, socklen_t
 	error = 0;
 	if ((ret = connect(fd, (struct sockaddr *)saptr, salen)) < 0) {
 		if (errno != EAGAIN && errno != EINPROGRESS) {
-			fcntl(fd, F_SETFL, flags);	
+			_E("connect error: %d", errno);
+			fcntl(fd, F_SETFL, flags);
 			return (-2);
 		}
 	}
@@ -219,8 +220,9 @@ static int __connect_client_sock(int fd, const struct sockaddr *saptr, socklen_t
 	timeout.tv_sec = 0;
 	timeout.tv_usec = nsec;
 
-	if ((ret = select(fd + 1, &readfds, &writefds, NULL, 
+	if ((ret = select(fd + 1, &readfds, &writefds, NULL,
 			nsec ? &timeout : NULL)) == 0) {
+		_E("select timeout");
 		close(fd);	/* timeout */
 		errno = ETIMEDOUT;
 		return (-1);
@@ -262,8 +264,10 @@ int __app_send_raw(int pid, int cmd, unsigned char *kb_data, int datalen)
 	_D("pid(%d) : cmd(%d)", pid, cmd);
 
 	fd = __create_client_sock(pid);
-	if (fd < 0)
+	if (fd < 0) {
+		_E("cannot create a client socket: %d", fd);
 		return -ECOMM;
+	}
 
 	/* aul_app_is_running timeout : 25sec */
 	if(cmd == APP_IS_RUNNING) {
@@ -291,7 +295,7 @@ int __app_send_raw(int pid, int cmd, unsigned char *kb_data, int datalen)
 			while (len != datalen + 8) {
 				ret = send(fd, &pkt->data[len-8], datalen + 8 - len, 0);
 				if (ret < 0) {
-					_E("second sendto() failed - %d %d (errno %d)", ret, datalen + 8, errno);
+					_E("second send() failed - %d %d (errno: %d)", ret, datalen + 8, errno);
 					if (errno == EPIPE) {
 						_E("pid:%d, fd:%d\n", pid, fd);
 					}
@@ -303,7 +307,7 @@ int __app_send_raw(int pid, int cmd, unsigned char *kb_data, int datalen)
 					return -ECOMM;
 				}
 				len += ret;
-				_D("sendto() len - %d %d", len, datalen + 8);
+				_D("send() len - %d %d", len, datalen + 8);
 			}
 		} else {
 			if (errno == EPIPE) {
@@ -314,6 +318,8 @@ int __app_send_raw(int pid, int cmd, unsigned char *kb_data, int datalen)
 				free(pkt);
 				pkt = NULL;
 			}
+
+			_E("send() failed: %d %s", errno, strerror(errno));
 			return -ECOMM;
 		}
 	}
@@ -496,7 +502,7 @@ app_pkt_t *__app_recv_raw(int fd, int *clifd, struct ucred *cr)
 	if ((*clifd = accept(fd, (struct sockaddr *)&aul_addr,
 			     (socklen_t *) &sun_size)) == -1) {
 		if (errno != EINTR)
-			_E("accept error");
+			_E("accept error: %d", errno);
 		return NULL;
 	}
 
@@ -519,9 +525,11 @@ app_pkt_t *__app_recv_raw(int fd, int *clifd, struct ucred *cr)
  retry_recv:
 	/* receive single packet from socket */
 	len = recv(*clifd, pkt, AUL_SOCK_MAXBUFF, 0);
-	if (len < 0)
+	if (len < 0) {
+		_E("recv error: %d", errno);
 		if (errno == EINTR)
 			goto retry_recv;
+	}
 
 	if (len < 8) {
 		_E("recv error %d %d", len, pkt->len);
@@ -530,10 +538,10 @@ app_pkt_t *__app_recv_raw(int fd, int *clifd, struct ucred *cr)
 		return NULL;
 	}
 
-	while( len != (pkt->len + 8) ) {
+	while( len < (pkt->len + 8) ) {
 		ret = recv(*clifd, &pkt->data[len-8], AUL_SOCK_MAXBUFF, 0);
 		if (ret < 0) {
-			_E("recv error %d %d", len, pkt->len);
+			_E("recv error: %d %d %d", errno, len, pkt->len);
 			free(pkt);
 			close(*clifd);
 			return NULL;
@@ -569,7 +577,7 @@ app_pkt_t *__app_send_cmd_with_result(int pid, int cmd, unsigned char *kb_data, 
 	}
 
 	if ((len = send(fd, pkt, datalen + 8, 0)) != datalen + 8) {
-		_E("sendto() failed - %d", len);
+		_E("send() failed: %d len: %d", errno, len);
 		if (errno == EPIPE) {
 			_E("pid:%d, fd:%d\n", pid, fd);
 		}
@@ -591,7 +599,7 @@ retry_recv:
 		} else if (errno == EINTR) {
 			goto retry_recv;
 		} else {
-			_E("recv error %s\n", strerror(errno));
+			_E("recv error %d %s", errno, strerror(errno));
 			free(pkt);
 			close(fd);
 			return NULL;

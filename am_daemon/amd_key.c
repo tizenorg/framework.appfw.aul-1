@@ -28,12 +28,13 @@
 #include <glib.h>
 
 #include "amd_config.h"
+#include "amd_key.h"
 #include "simple_util.h"
 #include "app_sock.h"
 #include "launch.h"
 
 static struct {
-	Evas_Object *win;
+	Ecore_X_Window win;
 	Ecore_Event_Handler *key_up;
 	Ecore_Event_Handler *key_down;
 } key_info = {
@@ -70,7 +71,7 @@ static Eina_Bool __key_release_cb(void *data, int type, void *event)
 		bundle_add(kb, AUL_K_MULTI_KEY, ev->keyname);
 		bundle_add(kb, AUL_K_MULTI_KEY_EVENT, AUL_V_KEY_RELEASED);
 
-		ret = app_send_cmd(*pid_data, APP_KEY_EVENT, kb);
+		ret = app_send_cmd_with_noreply(*pid_data, APP_KEY_EVENT, kb);
 		if (ret < 0)
 			_E("app_send_cmd failed with error %d\n", ret);
 
@@ -104,7 +105,7 @@ static Eina_Bool __key_press_cb(void *data, int type, void *event)
 		bundle_add(kb, AUL_K_MULTI_KEY, ev->keyname);
 		bundle_add(kb, AUL_K_MULTI_KEY_EVENT, AUL_V_KEY_PRESSED);
 
-		ret = app_send_cmd(*pid_data, APP_KEY_EVENT, kb);
+		ret = app_send_cmd_with_noreply(*pid_data, APP_KEY_EVENT, kb);
 		if (ret < 0)
 			_E("app_send_cmd failed with error %d\n", ret);
 
@@ -164,16 +165,25 @@ int _unregister_key_event(int pid)
 	return 0;
 }
 
+Ecore_X_Window _input_window_get()
+{
+	return key_info.win;
+}
+
 int _key_init()
 {
-	key_info.win = ecore_x_window_input_new(0, 0, 0, 1, 1);
+	key_info.win = ecore_x_window_input_new(ecore_x_window_root_first_get(), 0, 0, 1, 1);
 	if (!key_info.win) {
 		_D("Failed to create hidden window");
 	}
 
+	_D("_key_init, win : %x", key_info.win);
+
 	ecore_x_icccm_title_set(key_info.win, "acdaemon,key,receiver");
 	ecore_x_netwm_name_set(key_info.win, "acdaemon,key,receiver");
 	ecore_x_netwm_pid_set(key_info.win, getpid());
+
+	ecore_x_window_show(key_info.win);
 
 	utilx_grab_key(ecore_x_display_get(), key_info.win, KEY_PLAYCD, SHARED_GRAB);
 	utilx_grab_key(ecore_x_display_get(), key_info.win, KEY_STOPCD, SHARED_GRAB);

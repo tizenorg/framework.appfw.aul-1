@@ -52,11 +52,17 @@ typedef struct {
 	char *pkg_type;		/* x_slp_packagetype */
 	char *hwacc;		/* hwacceleration */
 	char *taskmanage;	/* taskmanage */
+	char *pkg_id;
 } app_info_from_db;
 
 static inline char *_get_pkgname(app_info_from_db *menu_info)
 {
 	return menu_info ? menu_info->pkg_name : NULL;
+}
+
+static inline char *_get_pkgid(app_info_from_db *menu_info)
+{
+	return menu_info ? menu_info->pkg_id : NULL;
 }
 
 static inline char *_get_app_path(app_info_from_db *menu_info)
@@ -105,8 +111,14 @@ static inline void _free_app_info_from_db(app_info_from_db *menu_info)
 			free(menu_info->app_path);
 		if (menu_info->original_app_path != NULL)
 			free(menu_info->original_app_path);
+		if (menu_info->pkg_type != NULL)
+			free(menu_info->pkg_type);
 		if (menu_info->hwacc != NULL)
 			free(menu_info->hwacc);
+		if (menu_info->taskmanage != NULL)
+			free(menu_info->taskmanage);
+		if (menu_info->pkg_id != NULL)
+			free(menu_info->pkg_id);
 		free(menu_info);
 	}
 }
@@ -168,6 +180,7 @@ static inline ail_cb_ret_e __appinfo_func(const ail_appinfo_h appinfo, void *use
 {
 	app_info_from_db *menu_info = (app_info_from_db *)user_data;
 	char *package;
+	char *pkgid;
 	ail_cb_ret_e ret = AIL_CB_RET_CONTINUE;
 
 	if (!menu_info)
@@ -177,6 +190,11 @@ static inline ail_cb_ret_e __appinfo_func(const ail_appinfo_h appinfo, void *use
 	if (package) {
 		menu_info->pkg_name = strdup(package);
 		ret = AIL_CB_RET_CANCEL;
+	}
+
+	ail_appinfo_get_str(appinfo, AIL_PROP_X_SLP_PKGID_STR, &pkgid);
+	if (pkgid) {
+		menu_info->pkg_id = strdup(pkgid);
 	}
 
 	return ret;

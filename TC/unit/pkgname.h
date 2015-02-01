@@ -20,7 +20,7 @@
  */
 #define MAX_LOCAL_BUFSZ 	128
 
-#define EXIST_PKGNAME 		"org.tizen.calculator"
+#define EXIST_PKGNAME 		"com.samsung.calculator" 
 #define NO_EXIST_PKGNAME 	"empty.fault.application"
 
 #define EXIST_FILENAME		"/usr/share/aul/preload_list.txt"

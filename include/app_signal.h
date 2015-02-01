@@ -20,32 +20,59 @@
  */
 
 
-#ifndef __APP_DBUS_H__
-#define __APP_DBUS_H__
+#ifndef __APP_SIGNAL_H__
+#define __APP_SIGNAL_H__
 
-#include <glib.h>
 #include <dbus/dbus.h>
-#include <dbus/dbus-glib-lowlevel.h>
 
 #define AUL_DBUS_PATH "/aul/dbus_handler"
-#ifdef WEARABLE_PROFILE
 #define AUL_DBUS_SIGNAL_INTERFACE "com.samsung.aul.signal"
-#else
-#define AUL_DBUS_SIGNAL_INTERFACE "org.tizen.aul.signal"
-#endif
 #define AUL_DBUS_APPDEAD_SIGNAL	"app_dead"
 #define AUL_DBUS_APPLAUNCH_SIGNAL	"app_launch"
 #define AUL_DBUS_HOMELAUNCH_SIGNAL	"home_launch"
 
+#ifdef _APPFW_FEATURE_CPU_BOOST
 #define SYSTEM_BUS_NAME       "org.tizen.system.deviced"
-
 #define SYSTEM_OBJECT_PATH    "/Org/Tizen/System/DeviceD/PmQos"
 #define SYSTEM_INTERFACE_NAME "org.tizen.system.deviced.PmQos"
 #define SYSTEM_METHOD_NAME    "AppLaunch"
+#endif
 
 #define SYSTEM_PATH_CORE    	"/Org/Tizen/System/DeviceD/Core"
 #define SYSTEM_INTERFACE_CORE 	"org.tizen.system.deviced.core"
 
 #define SYSTEM_SIGNAL_BOOTING_DONE		"BootingDone"
 
+#define SYSTEM_PATH_SYSNOTI    	"/Org/Tizen/System/DeviceD/SysNoti"
+#define SYSTEM_INTERFACE_SYSNOTI 	"org.tizen.system.deviced.SysNoti"
+
+#define SYSTEM_SIGNAL_COOLDOWN_CHANGED		"CoolDownChanged"
+
+#define RESOURCED_PATH_CORE    	"/Org/Tizen/ResourceD/Process"
+#define RESOURCED_INTERFACE_CORE 	"org.tizen.resourced.process"
+
+#define RESOURCED_SIGNAL_PROCESS_STATUS		"ProcStatus"
+
+#define ROTATION_BUS_NAME       "org.tizen.system.coord"
+#define ROTATION_OBJECT_PATH    "/Org/Tizen/System/Coord/Rotation"
+#define ROTATION_INTERFACE_NAME "org.tizen.system.coord.rotation"
+#define ROTATION_METHOD_NAME    "Degree"
+
+#define RESOURCED_PROC_OBJECT		"/Org/Tizen/ResourceD/Process"
+#define RESOURCED_PROC_INTERFACE	"org.tizen.resourced.process"
+#define RESOURCED_PROC_METHOD		"ProcExclude"
+
+#define RESOURCED_PROC_WATCHDOG_SIGNAL "ProcWatchdog"
+
+#define PROC_TYPE_EXCLUDE		"exclude"
+#define PROC_TYPE_INCLUDE		"include"
+#define PROC_TYPE_WAKEUP		"wakeup"
+
+#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
+#define DEVICED_PATH_DISPLAY	"/Org/Tizen/System/DeviceD/Display"
+#define DEVICED_INTERFACE_DISPLAY	"org.tizen.system.deviced.display"
+
+#define DEVICED_SIGNAL_LCD_ON			"LCDOn"
+#define DEVICED_SIGNAL_LCD_OFF		"LCDOff"
+#endif
 #endif

@@ -25,6 +25,12 @@
 #include <aul.h>
 #include <string.h>
 #include <Ecore.h>
+#include <proc_stat.h>
+#include <pkgmgr-info.h>
+#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
+#include <Ecore_X.h>
+#include <vconf/vconf.h>
+#endif
 
 #include "amd_config.h"
 #include "amd_status.h"
@@ -35,10 +41,31 @@
 #include "menu_db_util.h"
 
 GSList *app_status_info_list = NULL;
-
 struct appinfomgr *_saf = NULL;
 
-int _status_add_app_info_list(char *appid, char *app_path, int pid, int pad_pid)
+GHashTable *cooldown_tbl;
+
+GHashTable *cooldown_black_tbl;
+
+char *cooldown_list[] = {
+};
+
+char *cooldown_black_list[] = {
+};
+
+int cooldown_status = 0;
+
+#define WHITE_LIST_COUNT 0
+#define BLACK_LIST_COUNT 0
+
+#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
+#define LCD_ON	"LCDOn"
+#define LCD_OFF	"LCDOff"
+#define PROC_SIZE	256
+#define WAKE_UP_GESTURE_CLOCK		1
+#endif
+
+int _status_add_app_info_list(char *appid, char *app_path, const char *caller, int pid, int pad_pid)
 {
 	GSList *iter = NULL;
 	app_status_info_t *info_t = NULL;
@@ -52,8 +79,12 @@ int _status_add_app_info_list(char *appid, char *app_path, int pid, int pad_pid)
 	}
 
 	info_t = malloc(sizeof(app_status_info_t));
+	memset(info_t, 0, sizeof(app_status_info_t));
+
 	strncpy(info_t->appid, appid, MAX_PACKAGE_STR_SIZE-1);
 	strncpy(info_t->app_path, app_path, MAX_PACKAGE_APP_PATH_SIZE-1);
+	if(caller)
+		strncpy(info_t->caller, caller, MAX_PACKAGE_STR_SIZE-1);
 	info_t->status = STATUS_LAUNCHING;
 	info_t->pid = pid;
 	info_t->pad_pid = pad_pid;
@@ -180,6 +211,22 @@ char* _status_app_get_appid_bypid(int pid)
 			return info_t->appid;
 		}
 	}
+	return NULL;
+}
+
+char* _status_get_caller_by_appid(const char *appid)
+{
+	GSList *iter = NULL;
+	app_status_info_t *info_t = NULL;
+
+	for (iter = app_status_info_list; iter != NULL; iter = g_slist_next(iter))
+	{
+		info_t = (app_status_info_t *)iter->data;
+		if( strncmp(appid, info_t->appid, MAX_PACKAGE_STR_SIZE-1) == 0) {
+			return info_t->caller;
+		}
+	}
+
 	return NULL;
 }
 
@@ -355,11 +402,11 @@ int _status_get_appid_bypid(int fd, int pid)
 
 	memset(pkt, 0, AUL_SOCK_MAXBUFF);
 
-	pkt->cmd = APP_GET_APPID_BYPID_ERROR;
+	pkt->cmd = APP_GET_INFO_ERROR;
 
 	if (__get_pkgname_bypid(pid, (char *)pkt->data, MAX_PACKAGE_STR_SIZE) == 0) {
 		SECURE_LOGD("appid for %d is %s", pid, pkt->data);
-		pkt->cmd = APP_GET_APPID_BYPID_OK;
+		pkt->cmd = APP_GET_INFO_OK;
 		goto out;
 	}
 	/* support app launched by shell script*/
@@ -370,7 +417,7 @@ int _status_get_appid_bypid(int fd, int pid)
 
 	_D("second change pgid = %d, pid = %d", pgid, pid);
 	if (__get_pkgname_bypid(pgid, (char *)pkt->data, MAX_PACKAGE_STR_SIZE) == 0)
-		pkt->cmd = APP_GET_APPID_BYPID_OK;
+		pkt->cmd = APP_GET_INFO_OK;
 
  out:
 	pkt->len = strlen((char *)pkt->data) + 1;
@@ -389,11 +436,293 @@ int _status_get_appid_bypid(int fd, int pid)
 	return 0;
 }
 
+static int __get_pkgid_bypid(int pid, char *pkgid, int len)
+{
+	char *cmdline;
+	app_info_from_db *menu_info;
+
+	cmdline = __proc_get_cmdline_bypid(pid);
+	if (cmdline == NULL)
+		return -1;
+
+	if ((menu_info = _get_app_info_from_db_by_apppath(cmdline)) == NULL) {
+		free(cmdline);
+		return -1;
+	} else
+		snprintf(pkgid, len, "%s", _get_pkgid(menu_info));
+
+	free(cmdline);
+	_free_app_info_from_db(menu_info);
+
+	return 0;
+}
+
+int _status_get_pkgid_bypid(int fd, int pid)
+{
+	app_pkt_t *pkt = NULL;
+	int len;
+	int pgid;
+
+	pkt = (app_pkt_t *) malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
+	if(!pkt) {
+		_E("malloc fail");
+		close(fd);
+		return 0;
+	}
+
+	memset(pkt, 0, AUL_SOCK_MAXBUFF);
+
+	pkt->cmd = APP_GET_INFO_ERROR;
+
+	if (__get_pkgid_bypid(pid, (char *)pkt->data, MAX_PACKAGE_STR_SIZE) == 0) {
+		SECURE_LOGD("appid for %d is %s", pid, pkt->data);
+		pkt->cmd = APP_GET_INFO_OK;
+		goto out;
+	}
+	/* support app launched by shell script*/
+	_D("second chance");
+	pgid = getpgid(pid);
+	if (pgid <= 1)
+		goto out;
+
+	_D("second change pgid = %d, pid = %d", pgid, pid);
+	if (__get_pkgid_bypid(pgid, (char *)pkt->data, MAX_PACKAGE_STR_SIZE) == 0)
+		pkt->cmd = APP_GET_INFO_OK;
+
+ out:
+	pkt->len = strlen((char *)pkt->data) + 1;
+
+	if ((len = send(fd, pkt, pkt->len + 8, 0)) != pkt->len + 8) {
+		if (errno == EPIPE)
+			_E("send failed due to EPIPE.\n");
+		_E("send fail to client");
+	}
+
+	if(pkt)
+		free(pkt);
+
+	close(fd);
+
+	return 0;
+}
+
+static void __app_info_iter_limit_cb(void *user_data, const char *appid, const struct appinfo *ai)
+{
+	if(!g_hash_table_lookup(cooldown_tbl, appid)) {
+		appinfo_set_value(ai, AIT_STATUS, "blocking");
+	}
+}
+
+static void __app_info_iter_waring_cb(void *user_data, const char *appid, const struct appinfo *ai)
+{
+	if(g_hash_table_lookup(cooldown_black_tbl, appid)) {
+		appinfo_set_value(ai, AIT_STATUS, "blocking");
+	}
+}
+
+static void __app_info_iter_release_cb(void *user_data, const char *appid, const struct appinfo *ai)
+{
+	const char *component = NULL;
+	int onboot = 0;
+	int restart = 0;
+
+	if(!g_hash_table_lookup(cooldown_tbl, appid)) {
+		component = appinfo_get_value(ai, AIT_COMPTYPE);
+		onboot = appinfo_get_boolean(ai, AIT_ONBOOT);
+		restart = appinfo_get_boolean(ai, AIT_RESTART);
+		if (onboot == 1 && restart == 1 && strncmp(component, "svcapp", 6) == 0)
+		{
+			if (_status_app_is_running(appid) < 0)
+			{
+				_I("start service (cooldown release) - %s", appid);
+				_start_srv(ai, NULL);
+			}
+			else
+			{
+				_E("service: %s is already running", appid);
+			}
+		}
+		appinfo_set_value(ai, AIT_STATUS, "installed");
+	}
+}
+
+
+
+static int __cooldown_cb(const char* status, void *data)
+{
+	GSList *iter = NULL;
+	app_status_info_t *info_t = NULL;
+	int ret;
+	int dummy;
+
+	_I("__cooldown_cb, status: %s", status);
+
+	if(strncmp(status, "LimitAction", 11) == 0) {
+		appinfo_foreach(_saf, __app_info_iter_limit_cb, NULL);
+		for (iter = app_status_info_list; iter != NULL; iter = g_slist_next(iter))
+		{
+			info_t = (app_status_info_t *)iter->data;
+			if(!g_hash_table_lookup(cooldown_tbl, info_t->appid)) {
+				proc_group_change_status(PROC_CGROUP_SET_TERMINATE_REQUEST, info_t->pid, NULL);
+				ret = __app_send_raw_with_noreply(info_t->pid, APP_TERM_BY_PID_ASYNC, (unsigned char *)&dummy, sizeof(int) );
+			}
+		}
+		cooldown_status = COOLDOWN_LIMIT;
+	} else if(strncmp(status, "WarningAction", 13) == 0) {
+		appinfo_foreach(_saf, __app_info_iter_waring_cb, NULL);
+		for (iter = app_status_info_list; iter != NULL; iter = g_slist_next(iter))
+		{
+			info_t = (app_status_info_t *)iter->data;
+			if(g_hash_table_lookup(cooldown_black_tbl, info_t->appid)) {
+				proc_group_change_status(PROC_CGROUP_SET_TERMINATE_REQUEST, info_t->pid, NULL);
+				ret = __app_send_raw_with_noreply(info_t->pid, APP_TERM_BY_PID_ASYNC, (unsigned char *)&dummy, sizeof(int) );
+			}
+		}
+		cooldown_status = COOLDOWN_WARNING;
+	} else if (strncmp(status, "Release", 7) == 0){
+		appinfo_foreach(_saf, __app_info_iter_release_cb, NULL);
+		cooldown_status = COOLDOWN_RELEASE;
+	}
+
+	return 0;
+}
+
+int _status_get_cooldown_status(void)
+{
+	return cooldown_status;
+}
+
+#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
+static int __lcd_status_cb(const char *lcd_status, void *data)
+{
+	int gesture = -1;
+	Ecore_X_Window win;
+	int pid = 0;
+	bundle *kb = NULL;
+	char proc_file[PROC_SIZE] = {0, };
+	static int paused_pid = 0;
+
+	// Check the wake-up gesture is a clock or not.
+	// 0: Off, 1: Clock, 2: Last viewed screen
+	if (vconf_get_int(VCONFKEY_WMS_WAKEUP_BY_GESTURE_SETTING, &gesture) < 0) {
+		_E("Failed to get VCONFKEY_WMS_WAKEUP_BY_GESTURE_SETTING");
+		return 0;
+	}
+
+	if (gesture == WAKE_UP_GESTURE_CLOCK) {
+		SECURE_LOGD("Skip when wake-up gesture is a Clock.");
+		return 0;
+	}
+
+	// Get the topmost app
+	win = ecore_x_window_focus_get();
+	if (ecore_x_netwm_pid_get(win, &pid) != 1) {
+		_E("Can't get pid for focus x window (%x)", win);
+		return 0;
+	}
+	SECURE_LOGD("The topmost app's pid is %d.", pid);
+
+	// Pause or Resume the app when the lcd becomes On/Off
+	if (lcd_status && (strncmp(lcd_status, LCD_OFF, strlen(LCD_OFF)) == 0)) {
+		SECURE_LOGD("LCD status becomes Off. Pause the topmose app, %d", pid);
+		paused_pid = pid;
+		kb = bundle_create();
+		app_send_cmd_with_noreply(pid, APP_PAUSE_LCD_OFF, kb);
+	}
+	else if (lcd_status && (strncmp(lcd_status, LCD_ON, strlen(LCD_ON)) == 0)) {
+		if (paused_pid != pid) {
+			SECURE_LOGE("The topmost app(%d) is different with the paused app(%d).", pid, paused_pid);
+		}
+
+		// Check whether the paused app is running or Not
+		snprintf(proc_file, PROC_SIZE, "/proc/%d/cmdline", paused_pid);
+		if (access(proc_file, F_OK) != 0) {
+			SECURE_LOGE("paused app(%d) seems to be killed.", paused_pid);
+			if (paused_pid != pid) {
+				paused_pid = pid;
+			} else {
+				return 0;
+			}
+		}
+
+		SECURE_LOGD("LCD status becomes On. Resume the paused app, %d", paused_pid);
+		kb = bundle_create();
+		app_send_cmd_with_noreply(paused_pid, APP_RESUME_LCD_ON, kb);
+	}
+	else {
+		_E("Invalid input param for lcd_status.");
+	}
+
+	bundle_free(kb);
+	return 0;
+}
+#endif
+
+static int __app_info_handler (const pkgmgrinfo_appinfo_h handle, void *data)
+{
+	char *tmp_appid;
+	char *appid;
+
+	pkgmgrinfo_appinfo_get_appid(handle, &tmp_appid);
+
+	appid = strdup(tmp_appid);
+
+	g_hash_table_insert(cooldown_tbl, appid, appid);
+
+	SECURE_LOGD("white_list : %s", appid);
+
+	return 0;
+}
+
+static int __blacklist_app_info_handler (const pkgmgrinfo_appinfo_h handle, void *data)
+{
+	char *tmp_appid;
+	char *appid;
+
+	pkgmgrinfo_appinfo_get_appid(handle, &tmp_appid);
+
+	appid = strdup(tmp_appid);
+
+	g_hash_table_insert(cooldown_black_tbl, appid, appid);
+
+	SECURE_LOGD("white_list : %s", appid);
+
+	return 0;
+}
 
 int _status_init(struct amdmgr* amd)
 {
+	int i;
+	pkgmgrinfo_appinfo_h handle = NULL;
+
 	_saf = amd->af;
 
+	aul_listen_cooldown_signal(__cooldown_cb, NULL);
+
+	cooldown_tbl = g_hash_table_new(g_str_hash, g_str_equal);
+	for(i = 0; i < WHITE_LIST_COUNT; i++) {
+		SECURE_LOGD("pkgid %s", cooldown_list[i]);
+		if (pkgmgrinfo_pkginfo_get_pkginfo(cooldown_list[i], &handle) == PMINFO_R_OK){
+			pkgmgrinfo_appinfo_get_list(handle, PMINFO_SVC_APP, __app_info_handler, NULL);
+			pkgmgrinfo_appinfo_get_list(handle, PMINFO_UI_APP, __app_info_handler, NULL);
+			pkgmgrinfo_pkginfo_destroy_pkginfo(handle);
+		}
+	}
+
+	cooldown_black_tbl = g_hash_table_new(g_str_hash, g_str_equal);
+	for(i = 0; i < BLACK_LIST_COUNT; i++) {
+		SECURE_LOGD("pkgid %s", cooldown_black_list[i]);
+		if (pkgmgrinfo_pkginfo_get_pkginfo(cooldown_black_list[i], &handle) == PMINFO_R_OK){
+			pkgmgrinfo_appinfo_get_list(handle, PMINFO_SVC_APP, __blacklist_app_info_handler, NULL);
+			pkgmgrinfo_appinfo_get_list(handle, PMINFO_UI_APP, __blacklist_app_info_handler, NULL);
+			pkgmgrinfo_pkginfo_destroy_pkginfo(handle);
+		}
+	}
+
+#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
+	// Register callback for LCD On/Off
+	aul_listen_lcd_status_signal(__lcd_status_cb, NULL);
+#endif
 	return 0;
 }
 

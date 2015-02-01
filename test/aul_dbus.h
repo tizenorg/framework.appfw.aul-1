@@ -26,7 +26,7 @@ related to this software.
 		exit(1);\
 	} while (0);
 
-#define SERVICE_NAME "org.tizen.camera"
-#define PATH_NAME "/org/tizen/camera"
+#define SERVICE_NAME "com.samsung.camera"
+#define PATH_NAME "/com/samsung/camera"
 #define INTERFACE_NAME SERVICE_NAME".app_result"
 #define METHOD_NAME "take_and_get"

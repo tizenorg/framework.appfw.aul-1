@@ -19,10 +19,8 @@
  *
  */
 
-
 #include "aul.h"
 #include "aul_api.h"
-#include "mida.h"
 #include "miregex.h"
 #include <stdio.h>
 #include <string.h>
@@ -35,22 +33,6 @@
 
 #include "menu_db_util.h"
 #include "simple_util.h"
-
-#ifdef WEARABLE_PROFILE
-#define MIME_APP_SELECTOR "com.samsung.app-selector"
-#else
-#define MIME_APP_SELECTOR "org.tizen.app-selector"
-#endif
-
-static int __match_content_with_regex(const char *content, regex_t *regex_preg);
-static int get_defapp_from_desktop(const char *mimetype, char *defapp, int len);
-static int _aul_get_defapp_from_mime(const char *mimetype, char *unaliased,
-				     char *defapp, int len_unaliased,
-				     int len_defapp);
-static int __launch_with_defapp(const char *mime_type, 
-					const char *mime_content);
-
-
 
 static int __match_content_with_regex(const char *content, regex_t *regex_preg)
 {
@@ -119,7 +101,7 @@ SLPAPI int aul_get_mime_description(const char *mimetype, char *desc, int len)
 	if (founded != NULL)
 		snprintf(desc, len, "%s", founded);
 	else {
-		/* TODO : should to try to extract from 
+		/* TODO : should to try to extract from
 		   share mime info's comment */
 		return AUL_R_ERROR;
 	}
@@ -214,232 +196,3 @@ SLPAPI int aul_get_mime_from_file(const char *filename, char *mimetype, int len)
 	snprintf(mimetype, len, "%s", mime);
 	return AUL_R_OK;
 }
-
-SLPAPI int aul_set_defapp_with_mime(const char *mimetype, const char *defapp)
-{
-	const char *unaliased_mimetype;
-
-	if (mimetype == NULL || defapp == NULL) {
-		_E("invalid arg");
-		return AUL_R_EINVAL;
-	}
-
-	unaliased_mimetype = xdg_mime_unalias_mime_type(mimetype);
-	if (unaliased_mimetype == NULL)
-		return AUL_R_ERROR;
-
-	if (mida_add_app(unaliased_mimetype, defapp) < 0) {
-		_E("fail to add: mimtype-%s and defapp-%s", unaliased_mimetype,
-		   defapp);
-		return AUL_R_ERROR;
-	}
-
-	return AUL_R_OK;
-}
-
-static ail_cb_ret_e __defapp_with_mime_func(
-			const ail_appinfo_h appinfo, void *user_data)
-{
-	char **package = (char **)user_data;
-	char *str;
-
-	ail_appinfo_get_str(appinfo, AIL_PROP_PACKAGE_STR, &str);
-
-	_D("defapp from desktop = %s", str);
-
-	*package = strdup(str);
-	
-	return AIL_CB_RET_CANCEL;	/*return AIL_CB_RET_CONTINUE;*/	
-}
-
-static int get_defapp_from_desktop(const char *mimetype, char *defapp, int len)
-{
-	ail_filter_h filter;
-	ail_error_e ret;
-	int pkg_count = 0;
-	char *tmp = NULL;
-
-	ret = ail_filter_new(&filter);
-	if (ret != AIL_ERROR_OK) 
-		return -1;
-	
-	ret = ail_filter_add_str(filter, AIL_PROP_MIMETYPE_STR, mimetype);
-	if (ret != AIL_ERROR_OK) {
-		ret = -1;
-		goto out;
-	}
-	
-	ret = ail_filter_count_appinfo(filter, &pkg_count);
-	if (ret != AIL_ERROR_OK) {
-		ret = -1;
-		goto out;
-	}
-
-	if (pkg_count == 1) {
-		ail_filter_list_appinfo_foreach(filter, 
-			__defapp_with_mime_func, (void *)&tmp);
-
-		if(tmp) {
-			strncpy(defapp,tmp,len);
-			_D("defapp from desktop = %s", defapp);
-			aul_set_defapp_with_mime(mimetype, defapp);
-			ret = 0;
-			free(tmp);
-		}
-	} else 
-		ret = -1;
-	
-out:
-       ail_filter_destroy(filter);
-       return ret;	
-}
-
-SLPAPI int aul_get_defapp_from_mime(const char *mimetype, char *defapp, int len)
-{
-	char *res;
-	const char *unaliased_mimetype;
-
-	if (mimetype == NULL || defapp == NULL || len <= 0)
-		return AUL_R_EINVAL;
-
-	unaliased_mimetype = xdg_mime_unalias_mime_type(mimetype);
-	if (unaliased_mimetype == NULL)
-		return AUL_R_ERROR;
-
-	/* search mida db*/
-	if ((res = mida_get_app(unaliased_mimetype)) != NULL) {
-		snprintf(defapp, len, "%s", res);
-		free(res);
-		_D("Found %s for %s from mime db", defapp, unaliased_mimetype);
-		return AUL_R_OK;
-	}
-
-	if (get_defapp_from_desktop(unaliased_mimetype, defapp, len) != 0)
-		return AUL_R_ERROR;
-	else
-		return AUL_R_OK;
-}
-
-static int _aul_get_defapp_from_mime(const char *mimetype, char *unaliased,
-				     char *defapp, int len_unaliased,
-				     int len_defapp)
-{
-	char *res;
-	const char *unaliased_mimetype;
-
-	if (mimetype == NULL || unaliased == NULL || len_unaliased <= 0
-	    || defapp == NULL || len_defapp <= 0)
-		return AUL_R_EINVAL;
-
-	unaliased_mimetype = xdg_mime_unalias_mime_type(mimetype);
-	if (unaliased_mimetype == NULL)
-		return AUL_R_ERROR;
-
-	snprintf(unaliased, len_unaliased, "%s", unaliased_mimetype);
-
-	/* search mida db*/
-	if ((res = mida_get_app(unaliased_mimetype)) != NULL) {
-		snprintf(defapp, len_defapp, "%s", res);
-		free(res);
-		_D("Found %s for %s from mime db", defapp, unaliased_mimetype);
-		return AUL_R_OK;
-	}
-
-	if (get_defapp_from_desktop(unaliased_mimetype, defapp, len_defapp) < 0)
-		return AUL_R_ERROR;
-	else
-		return AUL_R_OK;
-}
-
-static int __launch_with_defapp(const char *mime_type, const char *mime_content)
-{
-	ail_appinfo_h handle;
-	ail_error_e ail_ret;
-	char defapp[MAX_LOCAL_BUFSZ];
-	char unaliased_mime_type[MAX_LOCAL_BUFSZ];
-	bundle *kb = NULL;
-	int ret = AUL_R_ERROR;
-
-	kb = bundle_create();
-	if (NULL == kb) {
-		_E("bundle creation fail");
-		return ret;
-	}
-	bundle_add(kb, AUL_K_MIME_TYPE, mime_type);
-	bundle_add(kb, AUL_K_MIME_CONTENT, mime_content);
-
- retry:
-	if (_aul_get_defapp_from_mime
-	    (mime_type, unaliased_mime_type, defapp,
-	     sizeof(unaliased_mime_type), sizeof(defapp)) < 0) {
-		SECURE_LOGD("mimetype : %s, unaliased mimetype : %s, mime_content : %s,"
-			" no default app", mime_type, 
-				unaliased_mime_type, mime_content);
-		bundle_add(kb, AUL_K_UNALIASED_MIME_TYPE, unaliased_mime_type);
-		ret = aul_launch_app(MIME_APP_SELECTOR, kb);
-		/* TODO: When launching MIME APP SELECTOR, what should 
-		be the return value? */
-		/* Currently, it returns 0 if the app selector is launched */
-		if (ret > 0)
-			ret = 0;
-	} else {
-		ail_ret = ail_get_appinfo(defapp, &handle);
-
-		if (ail_ret == AIL_ERROR_OK) {
-			ail_destroy_appinfo(handle);
-			SECURE_LOGD("mimetype : %s, unaliased mimetype : %s, "
-				"mime_content : %s, defapp : %s", mime_type, 
-					unaliased_mime_type, 
-						mime_content, defapp);
-			bundle_add(kb, AUL_K_UNALIASED_MIME_TYPE,
-				   unaliased_mime_type);
-			ret = aul_launch_app(defapp, kb);
-		} else if (ail_ret == AIL_ERROR_NO_DATA) {
-			SECURE_LOGD("defapp %s for mimetype : %s, mime_content : %s "
-				"does NOT exist", defapp, 
-					mime_type, mime_content);
-			mida_delete_with_pkgname(defapp);
-			ail_destroy_appinfo(handle);
-			goto retry;
-		} else {
-			SECURE_LOGE("ail_get_appinfo with %s failed", defapp);
-			if (kb) {
-				bundle_free(kb);
-				kb = NULL;
-			}
-			return ret;
-		}	
-	}
-	bundle_free(kb);
-	return ret;
-}
-
-SLPAPI int aul_open_content(const char *content)
-{
-	int ret;
-	char mime[MAX_LOCAL_BUFSZ];
-	if ((ret = aul_get_mime_from_content(content, mime, sizeof(mime))) < 0)
-		return ret;
-
-	return __launch_with_defapp(mime, content);
-}
-
-SLPAPI int aul_open_file_with_mimetype(const char *filename,
-				       const char *mimetype)
-{
-	if (mimetype == NULL)
-		return AUL_R_EINVAL;
-
-	return __launch_with_defapp(mimetype, filename);
-}
-
-SLPAPI int aul_open_file(const char *filename)
-{
-	int ret;
-	char mime[MAX_LOCAL_BUFSZ];
-	if ((ret = aul_get_mime_from_file(filename, mime, sizeof(mime))) < 0)
-		return ret;
-
-	return __launch_with_defapp(mime, filename);
-}
-

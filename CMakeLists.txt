@@ -22,12 +22,17 @@ MESSAGE("Build type: ${CMAKE_BUILD_TYPE}")
 # Set required packages
 INCLUDE(FindPkgConfig)
 
-IF(DEVICE_PROFILE STREQUAL "wearable")
-pkg_check_modules(pkgs REQUIRED dlog ecore x11 libprivilege-control rua glib-2.0 ecore-x ecore-input evas vconf pkgmgr-info system-resource security-server deviced elementary libsystemd-daemon privacy-manager-client)
-ELSE()
-pkg_check_modules(pkgs REQUIRED dlog ecore x11 libprivilege-control rua glib-2.0 ecore-x ecore-input evas vconf pkgmgr-info security-server elementary libsystemd-daemon privacy-manager-client)
-ENDIF()
-pkg_check_modules(libpkgs REQUIRED dlog bundle dbus-glib-1 ail xdgmime libsmack ecore ecore-x)
+SET(pkgs_requires "dlog ecore x11 libprivilege-control rua glib-2.0 ecore-x ecore-input evas vconf pkgmgr-info libresourced security-server")
+SET(libpkgs_requires "dlog bundle dbus-glib-1 ail xdgmime libsmack ecore pkgmgr-info")
+
+IF(_APPFW_FEATURE_APP_CHECKER)
+	SET(pkgs_requires "${pkgs_requires} app-checker app-checker-server")
+	SET(libpkgs_requires "${libpkgs_requires} app-checker")
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_APP_CHECKER")
+ENDIF(_APPFW_FEATURE_APP_CHECKER)
+
+pkg_check_modules(pkgs REQUIRED ${pkgs_requires})
+pkg_check_modules(libpkgs REQUIRED ${libpkgs_requires})
 PKG_CHECK_MODULES(PKGS REQUIRED glib-2.0 gio-2.0 dlog bundle)
 
 FIND_LIBRARY(LIB_DL dl)
@@ -44,7 +49,6 @@ ENDFOREACH(flag)
 INCLUDE_DIRECTORIES(${CMAKE_SOURCE_DIR}/include)
 INCLUDE_DIRECTORIES(${CMAKE_SOURCE_DIR}/legacy)
 INCLUDE_DIRECTORIES(${CMAKE_SOURCE_DIR}/feature)
-INCLUDE_DIRECTORIES(${CMAKE_SOURCE_DIR}/launchpad_src)
 SET(EXTRA_CFLAGS "${EXTRA_CFLAGS} -Wl,-zdefs" )
 SET(EXTRA_CFLAGS "${EXTRA_CFLAGS} -fvisibility=hidden")
 SET(EXTRA_CFLAGS "${EXTRA_CFLAGS} -fpic")
@@ -57,7 +61,7 @@ SET(CMAKE_C_FLAGS_RELEASE "-O2")
 
 SET(CMAKE_SKIP_BUILD_RPATH true)
 
-# Get uname value to set 'TARGET' definition 
+# Get uname value to set 'TARGET' definition
 # TODO: Is this needed?
 FIND_PROGRAM(UNAME NAMES uname)
 EXEC_PROGRAM("${UNAME}" ARGS "-m" OUTPUT_VARIABLE "ARCH")
@@ -65,16 +69,63 @@ IF("${ARCH}" STREQUAL "arm")
 	ADD_DEFINITIONS("-DTARGET")
 	MESSAGE("add -DTARGET")
 ENDIF("${ARCH}" STREQUAL "arm")
-IF(DEVICE_PROFILE STREQUAL "wearable")
-	ADD_DEFINITIONS("-DWEARABLE_PROFILE")
-ELSEIF(DEVICE_PROFILE STREQUAL "mobile")
-	ADD_DEFINITIONS("-DMOBILE_PROFILE")
-ENDIF()
 
 ADD_DEFINITIONS("-DPREFIX=\"${CMAKE_INSTALL_PREFIX}\"")
 ADD_DEFINITIONS("-DSHARE_PREFIX=\"/usr/share/aul\"")
-ADD_DEFINITIONS("-DPROCESS_POOL_ENABLE")
-ADD_DEFINITIONS("-DREMOVE_DB_ACCESS")
+IF(_APPFW_FEATURE_PROCESS_POOL)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_PROCESS_POOL")
+ENDIF(_APPFW_FEATURE_PROCESS_POOL)
+IF(_APPFW_FEATURE_PROCESS_POOL_COMMON)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_PROCESS_POOL_COMMON")
+ENDIF(_APPFW_FEATURE_PROCESS_POOL_COMMON)
+IF(_APPFW_FEATURE_PROCESS_POOL_HW_RENDERING)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_PROCESS_POOL_HW_RENDERING")
+ENDIF(_APPFW_FEATURE_PROCESS_POOL_HW_RENDERING)
+IF(_APPFW_FEATURE_MULTI_INSTANCE)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_MULTI_INSTANCE")
+ENDIF(_APPFW_FEATURE_MULTI_INSTANCE)
+IF(_APPFW_FEATURE_MULTI_WINDOW)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_MULTI_WINDOW")
+ENDIF(_APPFW_FEATURE_MULTI_WINDOW)
+IF(_APPFW_FEATURE_CHANGEABLE_COLOR)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_CHANGEABLE_COLOR")
+ENDIF(_APPFW_FEATURE_CHANGEABLE_COLOR)
+IF(_APPFW_FEATURE_CPU_BOOST)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_CPU_BOOST")
+ENDIF(_APPFW_FEATURE_CPU_BOOST)
+IF(_APPFW_FEATURE_CONTACT_PHONE_AS_ONE_APP)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_CONTACT_PHONE_AS_ONE_APP")
+ENDIF(_APPFW_FEATURE_CONTACT_PHONE_AS_ONE_APP)
+IF(_APPFW_FEATURE_PRIORITY_CHANGE)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_PRIORITY_CHANGE")
+ENDIF(_APPFW_FEATURE_PRIORITY_CHANGE)
+IF(_APPFW_FEATURE_DATA_CONTROL)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_DATA_CONTROL")
+ENDIF(_APPFW_FEATURE_DATA_CONTROL)
+IF(_APPFW_FEATURE_DEBUG_LAUNCHPAD)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_DEBUG_LAUNCHPAD")
+ENDIF(_APPFW_FEATURE_DEBUG_LAUNCHPAD)
+IF(_APPFW_FEATURE_APP_CONTROL_LITE)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_APP_CONTROL_LITE")
+ENDIF(_APPFW_FEATURE_APP_CONTROL_LITE)
+IF(_APPFW_FEATURE_NATIVE_LAUNCHPAD)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_NATIVE_LAUNCHPAD")
+ENDIF(_APPFW_FEATURE_NATIVE_LAUNCHPAD)
+IF(_APPFW_FEATURE_WMS_CONNECTION_CHECK)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_WMS_CONNECTION_CHECK")
+ENDIF(_APPFW_FEATURE_WMS_CONNECTION_CHECK)
+IF(_APPFW_FEATURE_BG_PROCESS_LIMIT)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_BG_PROCESS_LIMIT")
+ENDIF(_APPFW_FEATURE_BG_PROCESS_LIMIT)
+IF(_APPFW_FEATURE_TTS_MODE)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_TTS_MODE")
+ENDIF(_APPFW_FEATURE_TTS_MODE)
+IF(_APPFW_FEATURE_ULTRA_POWER_SAVING_MODE)
+        ADD_DEFINITIONS("-D_APPFW_FEATURE_ULTRA_POWER_SAVING_MODE")
+ENDIF(_APPFW_FEATURE_ULTRA_POWER_SAVING_MODE)
+IF(_APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS)
+        ADD_DEFINITIONS("-D_APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS")
+ENDIF(_APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS)
 
 # Linker flags
 SET(CMAKE_EXE_LINKER_FLAGS "-Wl,--as-needed")
@@ -88,6 +139,11 @@ add_library(aul_mods STATIC
 		src/simple_util.c
 		)
 
+# launchpad_common (static library)
+ADD_LIBRARY(launchpad_common STATIC
+	launchpad_src/util_x.c
+	)
+
 # aul
 add_library(aul SHARED
 		src/pkginfo.c
@@ -96,11 +152,12 @@ add_library(aul SHARED
 		src/launch_with_result.c
 		src/service.c
 		src/mime.c
-		src/mida.c
 		src/miregex.c
 		src/app_signal.c
 		src/key.c
 		src/status.c
+		src/runtime_info.c
+		src/aul_path.c
 		)
 target_link_libraries(aul aul_mods ${libpkgs_LDFLAGS})
 SET_TARGET_PROPERTIES(aul PROPERTIES SOVERSION ${VERSION_MAJOR})
@@ -110,26 +167,13 @@ SET_TARGET_PROPERTIES(aul PROPERTIES VERSION ${VERSION})
 SET(AVATAR_NAME "launchpad_preloading_preinitializing_daemon")
 add_executable(${AVATAR_NAME}
 	launchpad_src/launchpad.c
-	launchpad_src/util_x.c
 	)
 
 MESSAGE("       "${pkgs_LDFLAGS})
-target_link_libraries(${AVATAR_NAME} aul_mods aul ${pkgs_LDFLAGS} ${LIB_DL})
+target_link_libraries(${AVATAR_NAME} aul_mods launchpad_common aul ${pkgs_LDFLAGS} ${LIB_DL} "-pie")
 set_target_properties(${AVATAR_NAME}
 		PROPERTIES SKIP_BUILD_RPATH true
 		) # remove rpath option that is automatically generated by cmake.
-
-# Process pool launchpad
-SET(PROCESS_POOL "process_pool_launchpad_preloading_preinitializing_daemon")
-ADD_EXECUTABLE(${PROCESS_POOL}
-	process_pool/launchpad.c
-	process_pool/process_pool.c
-	launchpad_src/util_x.c
-	)
-TARGET_LINK_LIBRARIES(${PROCESS_POOL} aul_mods aul ${pkgs_LDFLAGS} ${LIB_DL})
-SET_TARGET_PROPERTIES(${PROCESS_POOL}
-	PROPERTIES SKIP_BUILD_RPATH true
-	) # remove rpath option that is automatically generated by cmake.
 
 add_executable(amd
                 am_daemon/amd_main.c
@@ -165,24 +209,32 @@ CONFIGURE_FILE(aul.pc.in aul.pc @ONLY)
 ### Install ###
 INSTALL(TARGETS aul DESTINATION lib COMPONENT RuntimeLibraries)
 INSTALL(TARGETS ${AVATAR_NAME} DESTINATION bin)
-INSTALL(TARGETS ${PROCESS_POOL} DESTINATION bin)
 INSTALL(TARGETS amd DESTINATION bin)
 
 INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/aul.h DESTINATION include/aul)
-INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/aul_service.h DESTINATION include/aul)
-INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/SLP_AUL_PG.h DESTINATION include/aul)
-INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/aul_service.sh DESTINATION bin)
-INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/aul_service_test.sh DESTINATION bin)
-INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/aul_mime.sh DESTINATION bin)
-INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/config_splash.sh DESTINATION bin)
+IF (_APPFW_FEATURE_DEFAULT_FAKE_IMAGE)
+	ADD_DEFINITIONS("-D_APPFW_FEATURE_DEFAULT_FAKE_IMAGE")
+	INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/config_splash.sh DESTINATION bin)
+ENDIF(_APPFW_FEATURE_DEFAULT_FAKE_IMAGE)
 INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/aul.pc DESTINATION lib/pkgconfig)
 
 INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/legacy/preload_list.txt DESTINATION /usr/share/aul )
-INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/process_pool/preload_list_for_process_pool.txt DESTINATION /usr/share/aul )
 INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/feature/preexec_list.txt DESTINATION /usr/share/aul )
-INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/mida_db.sql DESTINATION /usr/share/aul )
 INSTALL(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/miregex DESTINATION /usr/share/aul )
-INSTALL(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/service DESTINATION /usr/share/aul )
+
+INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/app_sock.h DESTINATION include/aul/launch)
+INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/simple_util.h DESTINATION include/aul/launch)
+INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/menu_db_util.h DESTINATION include/aul/launch)
+INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/app_signal.h DESTINATION include/aul/launch)
+INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/aul_util.h DESTINATION include/aul/launch)
+INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/access_control.h DESTINATION include/aul/launch)
+INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/perf.h DESTINATION include/aul/launch)
+INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/feature/preexec.h DESTINATION include/aul/launchpad)
+INSTALL(FILES ${CMAKE_CURRENT_SOURCE_DIR}/legacy/preload.h DESTINATION include/aul/launchpad)
+INSTALL(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/launchpad_src/ DESTINATION include/aul/launchpad FILES_MATCHING PATTERN "*.h")
+INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/libaul_mods.a DESTINATION lib)
+INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/liblaunchpad_common.a DESTINATION lib)
 
 # test
 add_subdirectory(test)
+

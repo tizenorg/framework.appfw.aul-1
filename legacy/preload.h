@@ -24,9 +24,6 @@
 
 #include <dlfcn.h>
 #define PRELOAD_FILE SHARE_PREFIX"/preload_list.txt"
-#ifdef PROCESS_POOL_ENABLE
-#define PROCESS_POOL_PRELOAD_FILE SHARE_PREFIX"/preload_list_for_process_pool.txt"
-#endif
 
 #define EFL_PREINIT_FUNC	"elm_quicklaunch_init"
 #define EFL_SHUTDOWN_FUNC	"elm_quicklaunch_shutdown"
@@ -83,90 +80,6 @@ static inline void __preload_init(int argc, char **argv)
 	preload_initialized = 1;
 }
 
-#ifdef PROCESS_POOL_ENABLE
-static int g_dlopen_size = 5;
-static int g_dlopen_count = 0;
-static void** g_dlopen_handle_list = NULL;
-
-static inline int __preload_save_dlopen_handle(void *handle)
-{
-    if (!handle) {
-        return 1;
-    }
-    if (g_dlopen_count == g_dlopen_size || !g_dlopen_handle_list) {
-        void** tmp =
-            realloc(g_dlopen_handle_list, 2 * g_dlopen_size * sizeof(void *));
-        if (NULL == tmp) {
-            _E("out of memory\n");
-            dlclose(handle);
-            return 1;
-        }
-        g_dlopen_size *= 2;
-        g_dlopen_handle_list = tmp;
-    }
-    g_dlopen_handle_list[g_dlopen_count++] = handle;
-    return 0;
-}
-
-static inline void __preload_fini_for_process_pool(void)
-{
-    int i = 0;
-    if (!g_dlopen_handle_list) {
-        return;
-    }
-    for (i = 0; i < g_dlopen_count; ++i)
-    {
-        void *handle = g_dlopen_handle_list[i];
-        if (handle) {
-            if (0 != dlclose(handle)) {
-                _E("dlclose failed\n");
-            }
-        }
-    }
-    free(g_dlopen_handle_list);
-    g_dlopen_handle_list = NULL;
-    g_dlopen_size = 5;
-    g_dlopen_count = 0;
-}
-
-static inline void __preload_init_for_process_pool(void)
-{
-    if (atexit(__preload_fini_for_process_pool) != 0) {
-        _E("Cannot register atexit callback. Libraries will not be unloaded");
-    }
-
-	void *handle = NULL;
-	char soname[MAX_LOCAL_BUFSZ] = { 0, };
-	FILE *preload_list = NULL;
-
-	preload_list = fopen(PROCESS_POOL_PRELOAD_FILE, "rt");
-	if (preload_list == NULL) {
-		_E("no preload\n");
-		return;
-	}
-
-	while (fgets(soname, MAX_LOCAL_BUFSZ, preload_list) > 0) {
-        size_t len = strnlen(soname, MAX_LOCAL_BUFSZ);
-        if (len > 0) {
-            soname[len - 1] = '\0';
-        }
-		handle = dlopen((const char *) soname, RTLD_NOW);
-		if (handle == NULL) {
-            _E("dlopen(\"%s\") was failed!", soname);
-            continue;
-        }
-
-        if (__preload_save_dlopen_handle(handle) != 0) {
-            _E("Cannot save handle, no more preloads");
-            break;
-        }
-        _D("preload %s# - handle : %x\n", soname, handle);
-	}
-
-	fclose(preload_list);
-}
-#endif
-
 static inline int preinit_init()
 {
 	if (dl_einit != NULL)
@@ -201,14 +114,21 @@ static inline void __preload_exec(int argc, char **argv)
 {
 	void *handle = NULL;
 	int (*dl_main) (int, char **);
+	char *error = NULL;
 
 	if (!preload_initialized)
 		return;
 
 	handle = dlopen(argv[0], RTLD_LAZY | RTLD_GLOBAL);
 	if (handle == NULL) {
+		_E("dlopen(\"%s\") failed", argv[0]);
+		if ((error = dlerror()) != NULL) {
+			_E("dlopen error: %s", error);
+		}
 		return;
 	}
+
+	dlerror();
 
 	dl_main = dlsym(handle, "main");
 	if (dl_main != NULL) {
@@ -217,9 +137,23 @@ static inline void __preload_exec(int argc, char **argv)
 			dlclose(handle);
 			return;
 		}
+
+#ifdef _APPFW_FEATURE_PRIORITY_CHANGE
+		int res = setpriority(PRIO_PROCESS, 0, 0);
+		if (res == -1)
+		{
+			SECURE_LOGE("Setting process (%d) priority to 0 failed, errno: %d (%s)",
+					getpid(), errno, strerror(errno));
+		}
+#endif
 		dl_main(argc, argv);
 	} else {
 		_E("dlsym not founded. bad preloaded app - check fpie pie");
+		if ((error = dlerror()) != NULL) {
+			_E("dlsym error: %s", error);
+		}
+		dlclose(handle);
+		return;
 	}
 
 	exit(0);

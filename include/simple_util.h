@@ -46,6 +46,8 @@
 #define _E(fmt, arg...) LOGE(fmt, ##arg)
 #define _D(fmt, arg...) LOGD(fmt, ##arg)
 #define _W(fmt, arg...) LOGW(fmt, ##arg)
+#define _I(fmt, arg...) LOGI(fmt, ##arg)
+
 
 #define retvm_if(expr, val, fmt, arg...) do { \
 	if (expr) { \

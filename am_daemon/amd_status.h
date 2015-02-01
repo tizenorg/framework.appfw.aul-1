@@ -21,7 +21,7 @@
 
 
 
-int _status_add_app_info_list(char *appid, char *app_path, int pid, int pad_pid);
+int _status_add_app_info_list(char *appid, char *app_path,const char *caller, int pid, int pad_pid);
 int _status_update_app_info_list(int pid, int status);
 int _status_remove_app_info_list(int pid);
 int _status_get_app_info_status(int pid);
@@ -30,7 +30,9 @@ int _status_send_running_appinfo(int fd);
 int _status_app_is_running_v2(char *appid);
 int _status_send_running_appinfo_v2(int fd);
 int _status_get_appid_bypid(int fd, int pid);
-
+int _status_get_pkgid_bypid(int fd, int pid);
+char* _status_get_caller_by_appid(const char *appid);
+int _status_get_cooldown_status(void);
 
 
 
@@ -41,7 +43,13 @@ typedef struct _item_pkt_t {
 	char appid[512];
 } item_pkt_t;
 
+#ifdef _APPFW_FEATURE_BG_PROCESS_LIMIT
 gboolean __add_item_running_list(gpointer user_data);
+#endif
 
-
+enum cooldown_status_val {
+	COOLDOWN_RELEASE,
+	COOLDOWN_WARNING,
+	COOLDOWN_LIMIT,
+};
 

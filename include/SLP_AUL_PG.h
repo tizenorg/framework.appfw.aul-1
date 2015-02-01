@@ -99,7 +99,7 @@ Caller application
 - The second parameter(bundle) give dictionary style's arguments to launched(callee) application.
 
 @code
-// the package name of this app is a "org.tizen.caller"
+// the package name of this app is a "com.samsung.caller"
 #include <aul.h>
 #include <bundle.h>
 void launch_func()
@@ -109,7 +109,7 @@ void launch_func()
 	bundle_add(kb, "key1", "val1");
 	bundle_add(kb, "key2", "val2");
 	bundle_add(kb, "key3", "val3");
-	aul_launch_app("org.tizen.callee",kb);
+	aul_launch_app("com.samsung.callee",kb);
 	bundle_free(kb);
 }
 @endcode
@@ -120,11 +120,11 @@ void launch_func()
 - If the application is not running, the application will be launched.
 
 @code
-// the package name of this app is a "org.tizen.caller"
+// the package name of this app is a "com.samsung.caller"
 #include <aul.h>
 void resume_func()
 {
-	aul_open_app("org.tizen.callee");
+	aul_open_app("com.samsung.callee");
 }
 @endcode
 
@@ -279,7 +279,7 @@ int main (int argc, char **argv)
 
 int main (int argc, char **argv)
 {
-	if(aul_app_is_running("org.tizen.app2"))
+	if(aul_app_is_running("com.samsung.app2"))
 		printf("application is running");
 }
 @endcode
@@ -304,108 +304,7 @@ void set_dead_handler_func()
 @endcode
 @}
 
-@defgroup AUL_Use_Cases3 Launch Based on Mime Type
-@ingroup AUL_Use_Cases
-@{
-<h2 class="pg"> High Level APIs - launch based on mime type(filename, URI) </h2>
-
-- These AUL functions are used to launch the default application associated with the specified MIME extension. In addition, AUL provides functions to set/get the default application (package name) associated with a MIME type and functions to retrieve the MIME type associated with a specific file.
-
-- AUL launch default application associated with filename or url(or content)
-
-- AUL automatically launch "application selection popup" when AUL doesn't find default application.\n
-  App-Selector(application selection popup) shows list of application to process the file(or content).\n
-  User can select application from the list and open file with the application.\n
-  User can determine whether the selected application is set as default application or not.\n
-  If App-Selector doesn't find any application to process the file, App-Selector will show "Cannot get mimetype" or "Cannot find default application".
-
-@code
-// the package name of this app is a "org.tizen.caller"
-#include <aul.h>
-void func1(char* filename)
-{
-	aul_open_file(filename);
-}
-
-void func2(char* content)
-{
-	aul_open_content(content);
-}
-
-int main (int argc, char **argv)
-{
-	// launch the application to process 3gp.3gp file
-	func1("/opt/media/Videos/3gp.3gp");
-	// launch the application to process "http://www.samsung.com"
-	func2("http://www.samsung.com");
-}
-@endcode
-
-- We support primitive APIs for MIME operation
-	- aul_get_mime_from_content
-	- aul_get_mime_from_file
-	- aul_get_defapp_from_mime
-	- aul_set_defapp_with_mime
-
-This is example to launch MIME default applications using primitive APIs
-
-@code
-// the package name of this app is a "org.tizen.caller"
-
-#include <aul.h>
-#include <bundle.h>
-
-int main (int argc, char **argv)
-{
-	int ret;
-	char mimetype[128];
-	char defapp[128];
-	bundle *kb;
-
-	// get MIME type of "3gp.3gp"
-	if( aul_get_mime_from_file("3gp.3gp",mimetype,sizeof(mimetype)) <0)
-		return -1;
-	printf("3gp.3gp's mime type is %s",mimetype);
-
-	// get default application of the mimetype
-	if( aul_get_defapp_from_mime(mimetype,defapp,sizeof(defapp)) < 0)
-		return -1;
-	printf("%s types default application is %s\n", mimetype, defapp);
-
-	// Launch the default application with specific mime key
-	kb = bundle_create();
-	bundle_add(kb, AUL_K_MIME_TYPE, mimetype);
-	bundle_add(kb, AUL_K_MIME_CONTENT, "3gp.3gp");
-	aul_launch_app(defapp, kb);
-	bundle_free(kb);
-}
-@endcode
-
-
-- In callee, if you want to process specific MIME type
-  First, you must add mimetype field at desktop file
-  Second, you must process special key "AUL_K_MIME_TYPE", "AUL_K_MIME_CONTENT"
-
-@code
-// the package name of this app is a "org.tizen.callee"
-#include <aul.h>
-#include <bundle.h>
-
-// AppCore Reset Handler
-static int app_reset(bundle *b, void *data)
-{
-	char* mime_type;
-
-	mime_type = bundle_get_val(b, AUL_K_MIME_TYPE);
-	if (!mime_type)
-		return 0;
-	else
-		process_mime(mime_type, bundle_get_val(AUL_K_MIME_CONTENT));
-}
-@endcode
-@}
-
-@defgroup AUL_Use_Cases4 Launch Based on Service Name and Command
+@defgroup AUL_Use_Cases3 Launch Based on Service Name and Command
 @ingroup AUL_Use_Cases
 @{
 <h2 class="pg"> High Level APIs - launch based on service name and command </h2>
@@ -418,7 +317,7 @@ static int app_reset(bundle *b, void *data)
 - the API is asynchronous.(non-blocking API)
 
 @code
-// the package name of this app is a "org.tizen.caller"
+// the package name of this app is a "com.samsung.caller"
 #include <aul.h>
 #include <bundle.h>
 void cb_func( bundle* kb, int reserved, void* data)
@@ -446,7 +345,7 @@ void service_launch_func()
 
 @code
 // Callee application
-// the package name of this app is a "org.tizen.callee"
+// the package name of this app is a "com.samsung.callee"
 
 #include <aul.h>
 #include <bundle.h>

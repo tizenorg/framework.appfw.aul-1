@@ -5,7 +5,6 @@
 			<smack request="aul::launch" type="x"/>
 			<smack request="aul::terminate" type="x"/>
 			<smack request="security-server::api-privilege-by-pid" type="w"/>
-			<smack request="deviced::display" type="rw"/>
 		</request>
 		<provide>
 			<label name="aul::db"/>
@@ -16,10 +15,6 @@
 	<assign>
 		<filesystem path="/usr/lib/libaul.so.0" label="_"/>
 		<filesystem path="/usr/lib/libaul.so.0.1.0" label="_"/>
-		<filesystem path="/usr/lib/systemd/system/ac.service" label="_" exec_label="none" />
-		<filesystem path="/usr/lib/systemd/system/launchpad-preload@.service" label="_" exec_label="none" />
-		<filesystem path="/usr/lib/systemd/system/graphical.target.wants/ac.service" label="_" exec_label="none" />
-		<filesystem path="/usr/lib/systemd/system/graphical.target.wants/launchpad-preload@app.service" label="_" exec_label="none" />
 	</assign>
 	<request>
 		<domain name="aul"/>
