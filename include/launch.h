@@ -34,6 +34,7 @@ int aul_make_bundle_from_argv(int argc, char **argv, bundle **kb);
 
 int app_start(bundle *kb);
 int app_send_cmd(int pid, int cmd, bundle *kb);
+int app_send_cmd_with_noreply(int pid, int cmd, bundle *kb);
 int app_request_to_launchpad(int cmd, const char *pkgname, bundle *kb);
 
 int _app_start_res_prepare(bundle *kb);

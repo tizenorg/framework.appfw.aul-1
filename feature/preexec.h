@@ -51,6 +51,7 @@ static void __preexec_list_free()
 		}
 	}
 	g_slist_free(preexec_list);
+	preexec_initialized = 0;
 	return;
 }
 
@@ -93,6 +94,7 @@ static inline void __preexec_init(int argc, char **argv)
 		if (type_t == NULL) {
 			_E("no available memory\n");
 			__preexec_list_free();
+			fclose(preexec_file);
 			return;
 		}
 
@@ -109,6 +111,7 @@ static inline void __preexec_init(int argc, char **argv)
 			   type, sopath);
 			free(type_t);
 			dlclose(handle);
+			handle = NULL;
 			continue;
 		}
 
@@ -117,6 +120,7 @@ static inline void __preexec_init(int argc, char **argv)
 			_E("no available memory\n");
 			free(type_t);
 			__preexec_list_free();
+			fclose(preexec_file);
 			return;
 		}
 		type_t->so_path = strdup(sopath);
@@ -125,6 +129,7 @@ static inline void __preexec_init(int argc, char **argv)
 			free(type_t->pkg_type);
 			free(type_t);
 			__preexec_list_free();
+			fclose(preexec_file);
 			return;
 		}
 		type_t->dl_do_pre_exe = func;
@@ -165,6 +170,10 @@ static inline void __preexec_run(const char *pkg_type, const char *pkg_name,
 }
 
 #else
+
+static void __preexec_list_free()
+{
+}
 
 static inline void __preexec_init(int argc, char **argv)
 {

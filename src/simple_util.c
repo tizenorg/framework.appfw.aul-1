@@ -27,10 +27,23 @@
 #include <dirent.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <linux/un.h>
 #include "simple_util.h"
 
 #define BINSH_NAME	"/bin/sh"
 #define BINSH_SIZE	7
+#define VALGRIND_NAME	"/home/developer/sdk_tools/valgrind/usr/bin/valgrind"
+#define VALGRIND_SIZE	51
+#define BASH_NAME	"/bin/bash"
+#define BASH_SIZE	9
+#define OPROFILE_NAME	"/usr/bin/oprofile_command"
+#define OPROFILE_SIZE	25
+#define OPTION_VALGRIND_NAME	"valgrind"
+#define OPTION_VALGRIND_SIZE	8
+
 
 #define PROC_STAT_GID_POS	5
 
@@ -128,7 +141,9 @@ int __proc_iter_cmdline(
 
 char *__proc_get_cmdline_bypid(int pid)
 {
-	char buf[MAX_LOCAL_BUFSZ];
+#define MAX_CMD_BUFSZ 1024
+
+	char buf[MAX_CMD_BUFSZ];
 	int ret;
 
 	snprintf(buf, sizeof(buf), "/proc/%d/cmdline", pid);
@@ -137,16 +152,44 @@ char *__proc_get_cmdline_bypid(int pid)
 		return NULL;
 
 	/* support app launched by shell script*/
-	if (strncmp(buf, BINSH_NAME, BINSH_SIZE) == 0)
+	if (strncmp(buf, BINSH_NAME, BINSH_SIZE) == 0) {
 		return strdup(&buf[BINSH_SIZE + 1]);
-	else
-		return strdup(buf);
+	}
+	else if (strncmp(buf, VALGRIND_NAME, VALGRIND_SIZE) == 0) {
+		char* ptr = buf;
+
+		// buf comes with double null-terminated string
+		while (1) {
+			while (*ptr) {
+				ptr++;
+			}
+			ptr++;
+
+			if (*ptr == NULL)
+				break;
+
+			// ignore trailing "--"
+			if (strncmp(ptr, "-", 1) != 0)
+				break;
+		};
+
+		return strdup(ptr);
+	}
+	else if (strncmp(buf, BASH_NAME, BASH_SIZE) == 0) {
+		if (strncmp(&buf[BASH_SIZE + 1], OPROFILE_NAME, OPROFILE_SIZE) == 0) {
+			if (strncmp(&buf[BASH_SIZE + OPROFILE_SIZE + 2], OPTION_VALGRIND_NAME, OPTION_VALGRIND_SIZE) == 0) {
+				return strdup(&buf[BASH_SIZE + OPROFILE_SIZE + OPTION_VALGRIND_SIZE + 3]);
+			}
+		}
+	}
+
+	return strdup(buf);
 }
 
 static inline int __get_pgid_from_stat(int pid)
 {
 	char buf[MAX_LOCAL_BUFSZ];
-	char *str;
+	char *str = NULL;
 	int ret;
 	int i;
 	int count = 0;
@@ -171,7 +214,7 @@ static inline int __get_pgid_from_stat(int pid)
 		}
 	}
 
-	if (count == PROC_STAT_GID_POS)
+	if (count == PROC_STAT_GID_POS && str)
 		pid = atoi(str);
 	else
 		pid = -1;
@@ -206,5 +249,46 @@ int __proc_iter_pgid(int pgid, int (*iterfunc) (int pid, void *priv),
 
 	closedir(dp);
 	return ret;
+}
+
+void __trm_app_info_send_socket(char *write_buf)
+{
+        const char trm_socket_for_app_info[] = "/dev/socket/app_info";
+        int socket_fd = 0;
+        int ret = 0;
+        struct sockaddr_un addr;
+
+	_D("__trm_app_info_send_socket");
+
+        if (access(trm_socket_for_app_info, F_OK) != 0) {
+		_E("access");
+		goto trm_end;
+	}
+
+        socket_fd = socket(AF_LOCAL, SOCK_STREAM, 0);
+        if (socket_fd < 0) {
+		_E("socket");
+                goto trm_end;
+        }
+
+        memset(&addr, 0, sizeof(addr));
+        snprintf(addr.sun_path, UNIX_PATH_MAX, "%s", trm_socket_for_app_info);
+        addr.sun_family = AF_LOCAL;
+
+        ret = connect(socket_fd, (struct sockaddr *) &addr ,sizeof(sa_family_t) + strlen(trm_socket_for_app_info) );
+        if (ret != 0) {
+                close(socket_fd);
+                goto trm_end;
+        }
+
+        ret = send(socket_fd, write_buf, strlen(write_buf), MSG_DONTWAIT | MSG_NOSIGNAL);
+	if (ret < 0)
+		_E("Unable to send data. Error is %s\n",strerror(errno));
+	else
+		_D("send");
+
+        close(socket_fd);
+trm_end:
+        return;
 }
 

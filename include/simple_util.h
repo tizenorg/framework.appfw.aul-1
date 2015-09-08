@@ -29,17 +29,25 @@
 
 #ifdef LAUNCHPAD_LOG
 #undef LOG_TAG
-#define LOG_TAG "AULD"
+#define LOG_TAG "AUL_PAD"
 #else
 #undef LOG_TAG
 #define LOG_TAG "AUL"
 #endif
+#ifdef AMD_LOG
+#undef LOG_TAG
+#define LOG_TAG "AUL_AMD"
+#endif
+
 
 #define MAX_LOCAL_BUFSZ 128
 #define MAX_PID_STR_BUFSZ 20
 
-#define _E(fmt, arg...) LOGE("[%s,%d] "fmt, __FUNCTION__, __LINE__, ##arg)
-#define _D(fmt, arg...) LOGD("[%s,%d] "fmt, __FUNCTION__, __LINE__, ##arg)
+#define _E(fmt, arg...) LOGE(fmt, ##arg)
+#define _D(fmt, arg...) LOGD(fmt, ##arg)
+#define _W(fmt, arg...) LOGW(fmt, ##arg)
+#define _I(fmt, arg...) LOGI(fmt, ##arg)
+
 
 #define retvm_if(expr, val, fmt, arg...) do { \
 	if (expr) { \
@@ -62,5 +70,25 @@ int __proc_iter_cmdline(int (*iterfunc)
 int __proc_iter_pgid(int pgid, int (*iterfunc) (int pid, void *priv),
 		     void *priv);
 char *__proc_get_cmdline_bypid(int pid);
+void __trm_app_info_send_socket(char *write_buf);
+
+
+static inline const char *FILENAME(const char *filename)
+{
+	const char *p;
+	const char *r;
+
+	if (!filename)
+		return NULL;
+
+	r = p = filename;
+	while (*p) {
+		if (*p == '/')
+			r = p + 1;
+		p++;
+	}
+
+	return r;
+}
 
 #endif

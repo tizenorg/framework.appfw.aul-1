@@ -117,18 +117,17 @@ static inline int __send_app_launch_signal(int launch_pid)
 static int __sigchild_action(void *data)
 {
 	pid_t dead_pid;
-	char buf[MAX_LOCAL_BUFSZ];
+	int ret;
 
 	dead_pid = (pid_t) data;
+	_I("dead_pid(%d)", dead_pid);
 	if (dead_pid <= 0)
 		goto end;
 
-	__send_app_dead_signal(dead_pid);
+	ret = __send_app_dead_signal(dead_pid);
 
-	snprintf(buf, MAX_LOCAL_BUFSZ, "%s/%d", AUL_SOCK_PREFIX, dead_pid);
-	unlink(buf);
+	_I("__send_app_dead_signal(%d)", ret);
 
-	__socket_garbage_collector();
  end:
 	return 0;
 }
@@ -140,13 +139,15 @@ static void __launchpad_sig_child(int signo, siginfo_t *info, void *data)
 	pid_t child_pgid;
 
 	child_pgid = getpgid(info->si_pid);
-	_D("dead_pid = %d pgid = %d", info->si_pid, child_pgid);
+	_I("dead_pid = %d pgid = %d", info->si_pid, child_pgid);
 
 	while ((child_pid = waitpid(-1, &status, WNOHANG)) > 0) {
 		if (child_pid == child_pgid)
 			killpg(child_pgid, SIGKILL);
 		__sigchild_action((void *)child_pid);
 	}
+
+	_I("after __sigchild_action");
 
 	return;
 }
@@ -187,7 +188,7 @@ static inline int __signal_set_sigchld(void)
 		dbus_error_free(&error);
 		return -1;
 	}
-	/* TODO: if process stop mechanism is included, 
+	/* TODO: if process stop mechanism is included,
 	should be modified (SA_NOCLDSTOP)*/
 	act.sa_handler = NULL;
 	act.sa_sigaction = __launchpad_sig_child;

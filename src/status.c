@@ -19,33 +19,39 @@
  *
  */
 
+#include <aul.h>
+#include <bundle.h>
 
-#ifndef __MIDA_H__
-#define __MIDA_H__
+#include "aul_util.h"
+#include "app_sock.h"
+#include "aul_api.h"
+#include "launch.h"
 
-#include <sqlite3.h>
-#include <time.h>
-#include <sys/types.h>
+SLPAPI int aul_status_update(int status)
+{
+	int ret;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+	ret = __app_send_raw_with_noreply(AUL_UTIL_PID, APP_STATUS_UPDATE, (unsigned char *)&status, sizeof(status));
 
-int mida_clear(void);
-int mida_delete_with_pkgname(const char *pkg_name);
-int mida_delete_with_mimetype(const char *mime_type);
-int mida_add_app(const char *mime_type, const char *pkg_name);
-char *mida_get_app(const char *mime_type);
-
-int svc_clear(void);
-int svc_delete_with_pkgname(const char *pkg_name);
-int svc_delete_with_svcname(const char *svc_name);
-int svc_add_app(const char *svc_name, const char *pkg_name);
-char *svc_get_app(const char *svc_name);
-
-int is_supported_svc(const char *svc_name);
-#ifdef __cplusplus
+	return ret;
 }
-#endif
-#endif				/*__MIDA_H__ */
+
+SLPAPI int aul_running_list_update(char *appid, char *app_path, char *pid)
+{
+	int ret;
+	bundle *kb;
+
+	kb = bundle_create();
+
+	bundle_add(kb, AUL_K_APPID, appid);
+	bundle_add(kb, AUL_K_EXEC, app_path);
+	bundle_add(kb, AUL_K_PID, pid);
+
+	ret = app_send_cmd(AUL_UTIL_PID, APP_RUNNING_LIST_UPDATE, kb);
+
+	if (kb != NULL)
+			bundle_free(kb);
+
+	return ret;
+}
 

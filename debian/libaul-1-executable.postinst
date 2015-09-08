@@ -1,9 +1,0 @@
-#!/bin/sh
-if [ "${USER}" = "root" ]
-then
-        chown root:root /usr/bin/launchpad_preloading_preinitializing_daemon
-        chown root:root /etc/rc.d/init.d/launchpad_run
-fi
-
-chmod 755 /usr/bin/launchpad_preloading_preinitializing_daemon
-chmod 755 /etc/rc.d/init.d/launchpad_run

@@ -75,6 +75,13 @@ SLPAPI int aul_key_init(int (*aul_handler) (bundle *, void *), void *data)
 	src = g_source_new(&funcs, sizeof(GSource));
 
 	gpollfd = (GPollFD *) g_malloc(sizeof(GPollFD));
+	if (gpollfd == NULL) {
+		_E("out of memory");
+		g_source_unref(src);
+		close(fd);
+		return AUL_R_ERROR;
+	}
+
 	gpollfd->events = POLLIN;
 	gpollfd->fd = fd;
 

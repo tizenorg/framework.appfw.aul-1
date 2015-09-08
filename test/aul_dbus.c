@@ -55,6 +55,7 @@ int main(int argc, char **argv)
 	DBusMessage *message;
 	DBusPendingCall *pc;
 	GMainLoop *loop;
+	dbus_bool_t ret;
 
 	char tmp[MAX_LOCAL_BUFSZ];
 	char *s;
@@ -72,7 +73,7 @@ int main(int argc, char **argv)
 
 	message = dbus_message_new_method_call (
 			SERVICE_NAME,PATH_NAME,INTERFACE_NAME,
-			METHOD_NAME); 
+			METHOD_NAME);
 
 	gettimeofday(&tv, NULL);
 	snprintf(tmp, MAX_LOCAL_BUFSZ, "%ld/%ld", tv.tv_sec, tv.tv_usec);
@@ -81,7 +82,12 @@ int main(int argc, char **argv)
 	dbus_message_append_args(message,
 				 DBUS_TYPE_STRING, &s, DBUS_TYPE_INVALID);
 
-	dbus_connection_send_with_reply(bus, message, &pc, INT_MAX);
+	ret = dbus_connection_send_with_reply(bus, message, &pc, INT_MAX);
+	if (!ret) {
+		_E("dbus_connection_send_with_reply() failed.");
+		dbus_message_unref(message);
+		return -1;
+	}
 	if (!dbus_pending_call_set_notify(pc, request_cb, NULL, NULL))
 		_E("pending call set fail");
 

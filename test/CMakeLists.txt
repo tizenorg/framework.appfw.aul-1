@@ -1,36 +1,34 @@
 # Test executables
 
-SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${TEST_CFLAGS}")
+SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${TEST_CFLAGS} -fPIE")
 
 add_executable(aul_test
 		aul_test.c) 
-target_link_libraries(aul_test aul ${pkgs_LDFLAGS})
+target_link_libraries(aul_test "-pie" aul ${pkgs_LDFLAGS})
 INSTALL(TARGETS aul_test DESTINATION bin)
 
 add_executable(launch_app
 		launch_app.c) 
-target_link_libraries(launch_app aul ${pkgs_LDFLAGS})
+target_link_libraries(launch_app "-pie" aul ${pkgs_LDFLAGS})
 INSTALL(TARGETS launch_app DESTINATION bin)
+
+add_executable(open_app
+                open_app.c)
+target_link_libraries(open_app "-pie" aul ${pkgs_LDFLAGS})
+INSTALL(TARGETS open_app DESTINATION bin)
 
 add_executable(dbusapp_test
 		dbusapp_test.c) 
-target_link_libraries(dbusapp_test aul ${pkgs_LDFLAGS})
+target_link_libraries(dbusapp_test "-pie" aul ${pkgs_LDFLAGS})
 
 add_executable(aul_dbus
 		aul_dbus.c) 
-target_link_libraries(aul_dbus aul ${pkgs_LDFLAGS})
+target_link_libraries(aul_dbus "-pie" aul ${pkgs_LDFLAGS})
 
 add_executable(test_app
 		app_test.c)
 set_target_properties(test_app PROPERTIES COMPILE_FLAGS "-fpie")
 target_link_libraries(test_app "-pie" aul ${pkgs_LDFLAGS} )
-
-add_executable(ac_daemon
-                ac_daemon.c
-		../src/app_sock.c
-		../src/simple_util.c)
-target_link_libraries(ac_daemon app-checker-server rua glib-2.0 bundle ail aul utilX ${pkgs_LDFLAGS})
-INSTALL(TARGETS ac_daemon DESTINATION bin)
 
 
 

@@ -27,6 +27,7 @@
 #include "aul_api.h"
 #include "launch.h"
 #include "simple_util.h"
+#include <Ecore.h>
 
 static GSource *src;
 
@@ -35,6 +36,22 @@ static gboolean __aul_glib_dispatch(GSource *src, GSourceFunc callback,
 				  gpointer data);
 static gboolean __aul_glib_prepare(GSource *src, gint *timeout);
 static gboolean __app_start_internal(gpointer data);
+
+static void __aul_glib_finalize(GSource *src)
+{
+	GSList *fd_list;
+	GPollFD *tmp;
+
+	fd_list = src->poll_fds;
+	do {
+		tmp = (GPollFD *) fd_list->data;
+		g_free(tmp);
+
+		fd_list = fd_list->next;
+	} while (fd_list);
+
+	return;
+}
 
 static gboolean __aul_glib_check(GSource *src)
 {
@@ -68,7 +85,7 @@ GSourceFuncs funcs = {
 	.prepare = __aul_glib_prepare,
 	.check = __aul_glib_check,
 	.dispatch = __aul_glib_dispatch,
-	.finalize = NULL
+	.finalize = __aul_glib_finalize
 };
 
 gboolean __aul_glib_handler(gpointer data)
@@ -106,6 +123,13 @@ SLPAPI int aul_launch_init(
 	src = g_source_new(&funcs, sizeof(GSource));
 
 	gpollfd = (GPollFD *) g_malloc(sizeof(GPollFD));
+	if (gpollfd == NULL) {
+		_E("out of memory");
+		g_source_unref(src);
+		close(fd);
+		return AUL_R_ERROR;
+	}
+
 	gpollfd->events = POLLIN;
 	gpollfd->fd = fd;
 
@@ -126,6 +150,7 @@ SLPAPI int aul_launch_init(
 SLPAPI int aul_launch_fini()
 {
 	g_source_destroy(src);
+	return AUL_R_OK;
 }
 
 SLPAPI int aul_launch_argv_handler(int argc, char **argv)
@@ -140,6 +165,27 @@ SLPAPI int aul_launch_argv_handler(int argc, char **argv)
 		_E("bundle for APP_START is NULL");
 	}
 	if (g_idle_add(__app_start_internal, b) > 0)
+		return AUL_R_OK;
+	else
+		return AUL_R_ERROR;
+}
+
+SLPAPI int aul_launch_argv_handler_for_efl(int argc, char **argv)
+{
+	bundle *b = NULL;
+
+	Ecore_Idler *idler = NULL;
+
+	if (!aul_is_initialized())
+		return AUL_R_ENOINIT;
+
+	b = bundle_import_from_argv(argc, argv);
+	if (b == NULL) {
+		_E("bundle for APP_START is NULL");
+	}
+
+	idler = ecore_idler_add(__app_start_internal, b);
+	if (idler)
 		return AUL_R_OK;
 	else
 		return AUL_R_ERROR;

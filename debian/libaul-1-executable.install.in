@@ -1,5 +1,0 @@
-@PREFIX@/bin/aul_test
-@PREFIX@/bin/launch_app
-@PREFIX@/bin/launchpad_preloading_preinitializing_daemon
-@PREFIX@/bin/ac_daemon
-/etc/*

@@ -50,7 +50,7 @@ In single instance model, if a currently running application is requested to be 
 Low-level AUL API(primitive APIs) expects the application to provide APN(application package name) it wishes to launch.\n Low-level interface used by AUL are as shown below. Unix Domain Socket is used to send events between launchpad deamon and applications.
 Launchpad deamon is responsible for setup default configuration of application like "setup authority", " setup application scale",...  DB is used to store / retain default configuration of application.
 
-@image html low-level2.png "Low-level AUL diagram" 
+@image html low-level2.png "Low-level AUL diagram"
 
 High-level APIs support to launch based on MIME types(based on filename, URI, service name). This feature is abstraction of APN. Most develpers want to launch based on filename, URI, service name without knowing APN. Below is example list.
  - When developer open browser appliction with "http://www.samsung.com".
@@ -58,7 +58,7 @@ High-level APIs support to launch based on MIME types(based on filename, URI, se
  - When developer launching application with service name "camera" and service command "take_picture"
 
 Internally, AUL finds MIME type with given filename, URI, service name. Next, AUL find APN of default application from DB with associated MIME type. and then, AUL launch the application using primitive AUL APIs.
- 
+
 @image html high-level2.png "High-Level AUL diagram"
 @}
 
@@ -81,7 +81,7 @@ Application Utility Library has the following features:\n
 	- AUL can get the default application associated with the MIME type.
 	- AUL can launch default applications associated with the MIME(file or content) when AUL find default application.
 	- AUL automatically launch "application selection popup" when AUL don't find default application associated with the MIME(file or content)
-	
+
  - Application Service support (High-Level APIs)
 	- AUL can launch applications based on service name and service command
 @}
@@ -109,13 +109,13 @@ void launch_func()
 	bundle_add(kb, "key1", "val1");
 	bundle_add(kb, "key2", "val2");
 	bundle_add(kb, "key3", "val3");
-	aul_launch_app("org.tizen.callee",kb); 
+	aul_launch_app("org.tizen.callee",kb);
 	bundle_free(kb);
 }
 @endcode
 
-- Return the application to the foreground 
-- You might want to use aul_open_app when you need to resume, 
+- Return the application to the foreground
+- You might want to use aul_open_app when you need to resume,
 	e.g., get it back to foreground, an application
 - If the application is not running, the application will be launched.
 
@@ -124,12 +124,12 @@ void launch_func()
 #include <aul.h>
 void resume_func()
 {
-	aul_open_app("org.tizen.callee"); 
+	aul_open_app("org.tizen.callee");
 }
 @endcode
 
 
-Callee application 
+Callee application
 
 - Integated with Appcore
 - If you use Appcore Library, Aul library already was integrated.\n
@@ -156,20 +156,20 @@ static void _app_initialize_with_arg(bundle *b)
 	// initialize your app with argument
 }
 
-// 
+//
 // called by window manager event
-// or called by aul_open_app 
+// or called by aul_open_app
 // create your resume handler
 //
 static int app_resume(void *data){return 0;}
 static int app_pause(void *data) {return 0;}
 
-// 
+//
 // called by aul_terminate_api
 //
 static int app_terminate(void *data){return 0;}
 
-// 
+//
 // called by aul_launch_app or aul_launch_api_with_result
 // this is example code. create your reset handler
 //
@@ -242,7 +242,7 @@ int main(int argc, char** argv)
 
 	ecore_main_loop_begin();  // You must need ecore or glib mainloop
 	return 0;
-} 
+}
 @endcode
 @}
 
@@ -257,7 +257,7 @@ int main(int argc, char** argv)
 @code
 #include <aul.h>
 
-int iterfunc(const aul_app_info* info, void* data) 
+int iterfunc(const aul_app_info* info, void* data)
 {
 	printf("package name: %s\n", info->pkg_name);
 	printf("running pid: %d\n", info->pid);
@@ -304,108 +304,7 @@ void set_dead_handler_func()
 @endcode
 @}
 
-@defgroup AUL_Use_Cases3 Launch Based on Mime Type
-@ingroup AUL_Use_Cases
-@{
-<h2 class="pg"> High Level APIs - launch based on mime type(filename, URI) </h2>
-
-- These AUL functions are used to launch the default application associated with the specified MIME extension. In addition, AUL provides functions to set/get the default application (package name) associated with a MIME type and functions to retrieve the MIME type associated with a specific file.
-
-- AUL launch default application associated with filename or url(or content) 
-
-- AUL automatically launch "application selection popup" when AUL doesn't find default application.\n
-  App-Selector(application selection popup) shows list of application to process the file(or content).\n
-  User can select application from the list and open file with the application.\n
-  User can determine whether the selected application is set as default application or not.\n
-  If App-Selector doesn't find any application to process the file, App-Selector will show "Cannot get mimetype" or "Cannot find default application".
-
-@code
-// the package name of this app is a "org.tizen.caller"
-#include <aul.h>
-void func1(char* filename)
-{
-	aul_open_file(filename);
-}
-
-void func2(char* content)
-{
-	aul_open_content(content);
-}
-
-int main (int argc, char **argv)
-{
-	// launch the application to process 3gp.3gp file
-	func1("/opt/media/Videos/3gp.3gp"); 
-	// launch the application to process "http://www.samsung.com"
-	func2("http://www.samsung.com");
-}
-@endcode
-
-- We support primitive APIs for MIME operation
-	- aul_get_mime_from_content
-	- aul_get_mime_from_file
-	- aul_get_defapp_from_mime
-	- aul_set_defapp_with_mime
-
-This is example to launch MIME default applications using primitive APIs
-
-@code
-// the package name of this app is a "org.tizen.caller"
-
-#include <aul.h>
-#include <bundle.h>
-
-int main (int argc, char **argv)
-{
-	int ret;
-	char mimetype[128];
-	char defapp[128];
-	bundle *kb;
-
-	// get MIME type of "3gp.3gp"
-	if( aul_get_mime_from_file("3gp.3gp",mimetype,sizeof(mimetype)) <0)
-		return -1;
-	printf("3gp.3gp's mime type is %s",mimetype);
-
-	// get default application of the mimetype
-	if( aul_get_defapp_from_mime(mimetype,defapp,sizeof(defapp)) < 0)
-		return -1;
-	printf("%s types default application is %s\n", mimetype, defapp);
-
-	// Launch the default application with specific mime key
-	kb = bundle_create();
-	bundle_add(kb, AUL_K_MIME_TYPE, mimetype);
-	bundle_add(kb, AUL_K_MIME_CONTENT, "3gp.3gp");
-	aul_launch_app(defapp, kb);
-	bundle_free(kb);
-}
-@endcode
-
-
-- In callee, if you want to process specific MIME type
-  First, you must add mimetype field at desktop file
-  Second, you must process special key "AUL_K_MIME_TYPE", "AUL_K_MIME_CONTENT"
-
-@code
-// the package name of this app is a "org.tizen.callee"
-#include <aul.h>
-#include <bundle.h>
-
-// AppCore Reset Handler
-static int app_reset(bundle *b, void *data)
-{
-	char* mime_type;
-
-	mime_type = bundle_get_val(b, AUL_K_MIME_TYPE);
-	if (!mime_type)
-		return 0;
-	else
-		process_mime(mime_type, bundle_get_val(AUL_K_MIME_CONTENT));
-}
-@endcode
-@}
-
-@defgroup AUL_Use_Cases4 Launch Based on Service Name and Command
+@defgroup AUL_Use_Cases3 Launch Based on Service Name and Command
 @ingroup AUL_Use_Cases
 @{
 <h2 class="pg"> High Level APIs - launch based on service name and command </h2>
@@ -458,7 +357,7 @@ void send_result(bundle *recved_bundle, char* id)
 	bundle_add(res_kb, "searched_id", id);
 	aul_send_service_result(res_kb);
 	bundle_free(res_kb);
-} 
+}
 @endcode
 @}
 

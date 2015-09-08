@@ -34,23 +34,61 @@ enum app_cmd {
 	APP_RESUME,
 	APP_RESUME_BY_PID,
 	APP_TERM_BY_PID,
+	APP_TERM_BY_PID_WITHOUT_RESTART,
 	APP_RESULT,
 	APP_START_RES,
 	APP_CANCEL,
 	APP_KILL_BY_PID,
 	APP_ADD_HISTORY,
 	APP_RUNNING_INFO,
+	APP_RUNNING_INFO_MEMORY,
 	APP_RUNNING_INFO_RESULT,
 	APP_IS_RUNNING,
+	APP_GET_APPID_BYPID,
+	APP_GET_PKGID_BYPID,
+	APP_GET_INFO_OK,
+	APP_GET_INFO_ERROR,
 	APP_KEY_EVENT,
 	APP_KEY_RESERVE,
-	APP_KEY_RELEASE
+	APP_KEY_RELEASE,
+	APP_STATUS_UPDATE,
+	APP_RELEASED,
+	APP_RUNNING_LIST_UPDATE,
+	APP_TERM_REQ_BY_PID,
+	APP_START_ASYNC,
+	APP_TERM_BY_PID_ASYNC,
+#ifdef _APPFW_FEATURE_MULTI_INSTANCE
+	APP_START_MULTI_INSTANCE,
+#endif
+#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
+	APP_PAUSE_LCD_OFF,
+	APP_RESUME_LCD_ON,
+#endif
+	APP_GET_CMDLINE,
 };
 
 #define AUL_SOCK_PREFIX "/tmp/alaunch"
 #define AUL_SOCK_MAXBUFF 65535
 #define LAUNCHPAD_PID -1
+#define WEB_LAUNCHPAD_PID -3
+#ifdef _APPFW_FEATURE_DEBUG_LAUNCHPAD
+#define DEBUG_LAUNCHPAD_PID -4
+#endif
+#ifdef _APPFW_FEATURE_PROCESS_POOL
+#define PROCESS_POOL_LAUNCHPAD_PID -5
+#endif
+#ifdef _APPFW_FEATURE_NATIVE_LAUNCHPAD
+#define NATIVE_LAUNCHPAD_PID -6
+#endif
 #define ELOCALLAUNCH_ID 128
+#define EILLEGALACCESS 127
+#define ETERMINATING 126
+#define ENOLAUNCHPAD 125
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+#define EUGLOCAL_LAUNCH 124
+#endif
+#define EREJECTED 123
+
 
 typedef struct _app_pkt_t {
 	int cmd;
@@ -61,8 +99,11 @@ typedef struct _app_pkt_t {
 int __create_server_sock(int pid);
 int __create_client_sock(int pid);
 int __app_send_raw(int pid, int cmd, unsigned char *kb_data, int datalen);
+int __app_send_raw_with_noreply(int pid, int cmd, unsigned char *kb_data, int datalen);
+int __app_send_raw_with_delay_reply(int pid, int cmd, unsigned char *kb_data, int datalen);
 app_pkt_t *__app_recv_raw(int fd, int *clifd, struct ucred *cr);
-app_pkt_t *__app_send_cmd_with_result(int pid, int cmd);
+app_pkt_t *__app_send_cmd_with_result(int pid, int cmd, unsigned char *kb_data, int datalen);
+
 
 #endif
 

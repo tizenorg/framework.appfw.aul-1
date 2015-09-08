@@ -20,7 +20,7 @@
  */
 
 
-#ifdef PRELOAD_ACTIVATE 
+#ifdef PRELOAD_ACTIVATE
 
 #include <dlfcn.h>
 #define PRELOAD_FILE SHARE_PREFIX"/preload_list.txt"
@@ -59,7 +59,7 @@ static inline void __preload_init(int argc, char **argv)
 
 	while (fgets(soname, MAX_LOCAL_BUFSZ, preload_list) > 0) {
 		soname[strlen(soname) - 1] = 0;
-		handle = dlopen(soname, RTLD_NOW);
+		handle = dlopen((const char *) soname, RTLD_NOW);
 		if (handle == NULL)
 			continue;
 		_D("preload %s# - handle : %x\n", soname, handle);
@@ -114,24 +114,46 @@ static inline void __preload_exec(int argc, char **argv)
 {
 	void *handle = NULL;
 	int (*dl_main) (int, char **);
+	char *error = NULL;
 
 	if (!preload_initialized)
 		return;
 
 	handle = dlopen(argv[0], RTLD_LAZY | RTLD_GLOBAL);
 	if (handle == NULL) {
+		_E("dlopen(\"%s\") failed", argv[0]);
+		if ((error = dlerror()) != NULL) {
+			_E("dlopen error: %s", error);
+		}
 		return;
 	}
+
+	dlerror();
 
 	dl_main = dlsym(handle, "main");
 	if (dl_main != NULL) {
 		if (__change_cmdline(argv[0]) < 0) {
 			_E("change cmdline fail");
+			dlclose(handle);
 			return;
 		}
+
+#ifdef _APPFW_FEATURE_PRIORITY_CHANGE
+		int res = setpriority(PRIO_PROCESS, 0, 0);
+		if (res == -1)
+		{
+			SECURE_LOGE("Setting process (%d) priority to 0 failed, errno: %d (%s)",
+					getpid(), errno, strerror(errno));
+		}
+#endif
 		dl_main(argc, argv);
 	} else {
 		_E("dlsym not founded. bad preloaded app - check fpie pie");
+		if ((error = dlerror()) != NULL) {
+			_E("dlsym error: %s", error);
+		}
+		dlclose(handle);
+		return;
 	}
 
 	exit(0);

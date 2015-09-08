@@ -32,12 +32,14 @@
 
 static char **gargv;
 static int gargc;
+bundle *kb = NULL;
+
 
 static bundle *create_internal_bundle(int start)
 {
 	bundle *kb;
 	int i;
-	char arg[1024];
+	char arg[1024] = {0, };
 	char* val_array[128];
 
 	kb = bundle_create();
@@ -46,7 +48,7 @@ static bundle *create_internal_bundle(int start)
 			bundle_add(kb, gargv[i], " ");
 		else {
 			int j = 1;
-			strncpy(arg, gargv[i + 1], 1024);
+			strncpy(arg, gargv[i + 1], 1023);
 			val_array[0] = strtok(arg,",");
 			while(1)
 			{
@@ -68,7 +70,6 @@ static bundle *create_internal_bundle(int start)
 
 int launch()
 {
-	bundle *kb = NULL;
 	FILE *fp;
 	int ret = -1;
 	int pid = -1;
@@ -81,18 +82,14 @@ int launch()
 
 	pid = aul_launch_app(gargv[1], kb);
 
-	if (kb) {
-		bundle_free(kb);
-		kb = NULL;
-	}
 	/* Write the package name to TMP_FILE*/
-	fp = fopen(TMP_FILE, "w");
+/*	fp = fopen(TMP_FILE, "w");
 	if (fp == NULL)
 		return -1;
 	ret = fprintf(fp, "%d", pid);
 	fclose(fp);
 	if (ret < 0)
-		return -1;
+		return -1;*/
 
 	return pid;
 }
@@ -103,28 +100,46 @@ void print_usage(char *progname)
 	       progname);
 }
 
-static Eina_Bool run_func(void *data)
+static int __launch_app_dead_handler(int pid, void *data)
 {
-	if (launch() > 0) {
-		printf("... successfully launched\n");
-	} else {
-		printf("... launch failed\n");
-	}
+	int listen_pid = (int) data;
 
-	ecore_main_loop_quit();
+	if(listen_pid == pid)
+		ecore_main_loop_quit();
 
 	return 0;
 }
 
-int main(int argc, char **argv)
+static Eina_Bool run_func(void *data)
 {
+	int pid = -1;
+	char *str = NULL;
 
-	/* Checking the User ID*/
-	if (getuid() != ROOT_UID) {
-		fprintf(stderr, "permission error\n");
-		exit(EXIT_FAILURE);
+	if ((pid = launch()) > 0) {
+		printf("... successfully launched\n");
+		str	 = bundle_get_val(kb, "__LAUNCH_APP_MODE__");
+
+		if( str && strcmp(str, "SYNC") == 0 ) {
+			aul_listen_app_dead_signal(__launch_app_dead_handler, pid);
+		} else {
+			ecore_main_loop_quit();
+        }
+	} else {
+		printf("... launch failed\n");
+		ecore_main_loop_quit();
 	}
 
+	if (kb) {
+		bundle_free(kb);
+		kb = NULL;
+	}
+
+	return 0;
+}
+
+
+int main(int argc, char **argv)
+{
 	if (argc < 2) {
 		print_usage(argv[0]);
 		exit(EXIT_FAILURE);
