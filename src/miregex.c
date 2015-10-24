@@ -19,7 +19,7 @@
  *
  */
 
-
+#define _GNU_SOURCE
 #include "miregex.h"
 #include "simple_util.h"
 #include <sys/types.h>
@@ -202,7 +202,8 @@ static void __miregex_free_regex_table()
 regex_tbl *miregex_get_regex_table()
 {
 	DIR *dp;
-	struct dirent *dentry;
+	struct dirent dentry;
+	struct dirent *result = NULL;
 	char buf[MAX_LOCAL_BUFSZ];
 	miregex_file_info *info;
 
@@ -218,17 +219,17 @@ regex_tbl *miregex_get_regex_table()
 	if (dp == NULL)
 		return NULL;
 
-	while ((dentry = readdir(dp)) != NULL) {
-		if (dentry->d_name[0] == '.')
+	while (readdir_r(dp, &dentry, &result) == 0 && result != NULL) {
+		if (dentry.d_name[0] == '.')
 			continue;
 
 		snprintf(buf, sizeof(buf), "%s/%s", MIREGEX_DIR,
-			 dentry->d_name);
+			 dentry.d_name);
 		info = __get_miregex_file_info(buf);
 		if (info == NULL)
 			continue;
 
-		if (__add_miregex(dentry->d_name, 
+		if (__add_miregex(dentry.d_name,
 			info->regex, info->desc) < 0) {
 			/* TODO : invalid regular expression - will be removed*/
 		}

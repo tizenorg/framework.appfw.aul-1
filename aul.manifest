@@ -5,16 +5,31 @@
 			<smack request="aul::launch" type="x"/>
 			<smack request="aul::terminate" type="x"/>
 			<smack request="security-server::api-privilege-by-pid" type="w"/>
+			<smack request="security-server::api-permissions" type="w"/>
+			<smack request="device::app_logging" type="w"/>
+			<smack request="device::sys_logging" type="w"/>
+			<smack request="tizen::vconf::platform::rw" type="rw"/>
+			<smack request="dbus" type="rwxa"/>
+			<smack request="xorg" type="rwx"/>
 		</request>
 		<provide>
 			<label name="aul::db"/>
 			<label name="aul::launch"/>
 			<label name="aul::terminate"/>
+			<label name="aul::jump"/>
+			<label name="aul::appgroup_info"/>
 		</provide>
+		<permit>
+			<smack permit="dbus" type="rwxa"/>
+			<smack permit="xorg" type="rwx"/>
+		</permit>
 	</define>
 	<assign>
 		<filesystem path="/usr/lib/libaul.so.0" label="_"/>
 		<filesystem path="/usr/lib/libaul.so.0.1.0" label="_"/>
+		<filesystem path="/usr/share/appsvc" label="_"/>
+		<filesystem path="/usr/share/appsvc/alias.ini" label="_"/>
+		<filesystem path="/usr/share/dbus-1/system-services/org.tizen.aul.delegator.service" label="_"/>
 	</assign>
 	<request>
 		<domain name="aul"/>

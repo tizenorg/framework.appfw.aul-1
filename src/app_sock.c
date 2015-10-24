@@ -19,7 +19,7 @@
  *
  */
 
-
+#define _GNU_SOURCE
 #include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +36,26 @@
 static int __connect_client_sock(int sockfd, const struct sockaddr *saptr, socklen_t salen,
 		   int nsec);
 
+char *_socket_prefix = NULL;
+char *_root_path = NULL;
+char *_cur_zone = NULL;
+int _pid_offset = 0;
+
+const char* _get_sock_prefix()
+{
+	if (_socket_prefix == NULL)
+		return "/tmp/alaunch";
+
+	return _socket_prefix;
+}
+
+const char* _get_root_path()
+{
+	if (_root_path == NULL)
+		return "/";
+
+	return _root_path;
+}
 
 static inline void __set_sock_option(int fd, int cli)
 {
@@ -61,7 +81,7 @@ int __create_server_sock(int pid)
 	(void) mkdir(AUL_SOCK_PREFIX, S_IRWXU | S_IRWXG | S_IRWXO | S_ISVTX);
 	umask(orig_mask);
 
-	fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
 	/*  support above version 2.6.27*/
 	if (fd < 0) {
 		if (errno == EINVAL) {
@@ -125,7 +145,7 @@ int __create_server_sock(int pid)
 	}
 
 	/* support app launched by shell script */
-	if (pid != LAUNCHPAD_PID) {
+	if (pid > 0 || pid == WEB_LAUNCHPAD_PID) {
 		int pgid;
 		pgid = getpgid(pid);
 		if (pgid > 1) {
@@ -503,7 +523,7 @@ app_pkt_t *__app_recv_raw(int fd, int *clifd, struct ucred *cr)
 
 	if ((*clifd = accept(fd, (struct sockaddr *)&aul_addr,
 			     (socklen_t *) &sun_size)) == -1) {
-		if (errno != EINTR)
+		if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)
 			_E("accept error: %d", errno);
 		return NULL;
 	}
@@ -512,12 +532,14 @@ app_pkt_t *__app_recv_raw(int fd, int *clifd, struct ucred *cr)
 		       (socklen_t *) &cl) < 0) {
 		_E("peer information error");
 		close(*clifd);
+		*clifd = -1;
 		return NULL;
 	}
 
 	pkt = (app_pkt_t *) malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
 	if(pkt == NULL) {
 		close(*clifd);
+		*clifd = -1;
 		return NULL;
 	}
 	memset(pkt, 0, AUL_SOCK_MAXBUFF);
@@ -537,6 +559,7 @@ app_pkt_t *__app_recv_raw(int fd, int *clifd, struct ucred *cr)
 		_E("recv error %d %d", len, pkt->len);
 		free(pkt);
 		close(*clifd);
+		*clifd = -1;
 		return NULL;
 	}
 
@@ -544,16 +567,18 @@ app_pkt_t *__app_recv_raw(int fd, int *clifd, struct ucred *cr)
 		_E("package length error (%d)", pkt->len);
 		free(pkt);
 		close(*clifd);
+		*clifd = -1;
 		return NULL;
 	}
 
 	while (len < (pkt->len + pkt_header_size)) {
 		ret = recv(*clifd, &pkt->data[len - pkt_header_size],
 			(pkt->len + pkt_header_size) - len, 0);
-		if (ret <= 0) { /* ret may be 0 when the peer has performed an orderly shutdown */
+		if (ret < 0) {
 			_E("recv error: %d %d %d", errno, len, pkt->len);
 			free(pkt);
 			close(*clifd);
+			*clifd = -1;
 			return NULL;
 		}
 		len += ret;

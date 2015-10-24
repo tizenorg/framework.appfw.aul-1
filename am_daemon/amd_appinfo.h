@@ -33,22 +33,40 @@ enum appinfo_type {
 	AIT_MULTI_INSTANCE_MAINID,
 	AIT_TOGGLE_ORDER,
 #endif
-#ifdef _APPFW_FEATURE_MULTI_WINDOW
-	AIT_MULTI_WINDOW,
-#endif
 #ifdef _APPFW_FEATURE_TTS_MODE
 	AIT_TTS,
 #endif
 #ifdef _APPFW_FEATURE_ULTRA_POWER_SAVING_MODE
 	AIT_UPS,
 #endif
+#ifdef _APPFW_FEATURE_COOLDOWN_MODE_SUPPORT
+	AIT_COOLDOWN,
+#endif
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+	AIT_TEP,
+	AIT_STORAGE_TYPE,
+#endif
+	AIT_ALLOWED_BG,
+	AIT_API_VER,
+	AIT_LAUNCH_MODE,
+#ifdef _APPFW_FEATURE_EFFECTIVE_APPID
+	AIT_EFFECTIVE_APPID,
+#endif
+#ifdef _APPFW_FEATURE_PRIVATE_SERVICE
+	AIT_VISIBILITY,
+#endif
 	AIT_MAX
 };
+
+#define APP_TYPE_SERVICE	"svcapp"
+#define APP_TYPE_UI			"uiapp"
+#define APP_TYPE_WIDGET		"widgetapp"
+#define APP_TYPE_WATCH		"watchapp"
 
 int appinfo_init(struct appinfomgr **cf);
 void appinfo_fini(struct appinfomgr **cf);
 
-const struct appinfo *appinfo_insert(struct appinfomgr *cf, const char *filename);
+const struct appinfomgr *appinfo_insert(struct appinfomgr *cf, const char *filename);
 void appinfo_delete(struct appinfomgr *cf, const char *filename);
 
 const struct appinfo *appinfo_find(struct appinfomgr *cf, const char *filename);

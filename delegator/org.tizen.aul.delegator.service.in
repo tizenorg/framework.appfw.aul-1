@@ -1,0 +1,6 @@
+[D-BUS Service]
+Name=org.tizen.aul.delegator
+Exec=/bin/false
+SystemdService=aul-delegator-server.service
+User=root
+

@@ -21,10 +21,10 @@
 
 
 #include <pthread.h>
+#include <sys/signalfd.h>
+#include <signal.h>
 #include "app_signal.h"
 
-static struct sigaction old_sigchild;
-static DBusConnection *bus = NULL;
 sigset_t oldmask;
 
 static inline void __socket_garbage_collector()
@@ -54,10 +54,18 @@ static inline void __socket_garbage_collector()
 
 static inline int __send_app_dead_signal(int dead_pid)
 {
+	DBusConnection *bus;
 	DBusMessage *message;
+	DBusError error;
 
-	if (bus == NULL)
+	dbus_error_init(&error);
+	dbus_threads_init_default();
+	bus = dbus_bus_get_private(DBUS_BUS_SYSTEM, &error);
+	if (!bus) {
+		_E("Failed to connect to the D-BUS daemon: %s", error.message);
+		dbus_error_free(&error);
 		return -1;
+	}
 
 	message = dbus_message_new_signal(AUL_DBUS_PATH,
 					  AUL_DBUS_SIGNAL_INTERFACE,
@@ -76,6 +84,7 @@ static inline int __send_app_dead_signal(int dead_pid)
 	}
 
 	dbus_connection_flush(bus);
+	dbus_connection_close(bus);
 	dbus_message_unref(message);
 
 	_D("send dead signal done\n");
@@ -85,10 +94,18 @@ static inline int __send_app_dead_signal(int dead_pid)
 
 static inline int __send_app_launch_signal(int launch_pid)
 {
+	DBusConnection *bus;
 	DBusMessage *message;
+	DBusError error;
 
-	if (bus == NULL)
+	dbus_error_init(&error);
+	dbus_threads_init_default();
+	bus = dbus_bus_get_private(DBUS_BUS_SYSTEM, &error);
+	if (!bus) {
+		_E("Failed to connect to the D-BUS daemon: %s", error.message);
+		dbus_error_free(&error);
 		return -1;
+	}
 
 	message = dbus_message_new_signal(AUL_DBUS_PATH,
 					  AUL_DBUS_SIGNAL_INTERFACE,
@@ -107,6 +124,7 @@ static inline int __send_app_launch_signal(int launch_pid)
 	}
 
 	dbus_connection_flush(bus);
+	dbus_connection_close(bus);
 	dbus_message_unref(message);
 
 	_D("send launch signal done\n");
@@ -132,14 +150,14 @@ static int __sigchild_action(void *data)
 	return 0;
 }
 
-static void __launchpad_sig_child(int signo, siginfo_t *info, void *data)
+static void __launchpad_process_sigchld(struct signalfd_siginfo *info)
 {
 	int status;
 	pid_t child_pid;
 	pid_t child_pgid;
 
-	child_pgid = getpgid(info->si_pid);
-	_I("dead_pid = %d pgid = %d", info->si_pid, child_pgid);
+	child_pgid = getpgid(info->ssi_pid);
+	_I("dead_pid = %d pgid = %d", info->ssi_pid, child_pgid);
 
 	while ((child_pid = waitpid(-1, &status, WNOHANG)) > 0) {
 		if (child_pid == child_pgid)
@@ -175,61 +193,24 @@ static inline int __signal_init(void)
 	return 0;
 }
 
-static inline int __signal_set_sigchld(void)
+static inline int __signal_get_sigchld_fd(void)
 {
-	struct sigaction act;
-	DBusError error;
+	sigset_t mask;
+	int sfd;
 
-	dbus_error_init(&error);
-	dbus_threads_init_default();
-	bus = dbus_bus_get_private(DBUS_BUS_SYSTEM, &error);
-	if (!bus) {
-		_E("Failed to connect to the D-BUS daemon: %s", error.message);
-		dbus_error_free(&error);
-		return -1;
-	}
-	/* TODO: if process stop mechanism is included,
-	should be modified (SA_NOCLDSTOP)*/
-	act.sa_handler = NULL;
-	act.sa_sigaction = __launchpad_sig_child;
-	sigemptyset(&act.sa_mask);
-	act.sa_flags = SA_NOCLDSTOP | SA_SIGINFO;
+	sigemptyset(&mask);
+	sigaddset(&mask, SIGCHLD);
 
-	if (sigaction(SIGCHLD, &act, &old_sigchild) < 0)
-		return -1;
+	if (sigprocmask(SIG_BLOCK, &mask, &oldmask) == -1)
+		_E("failed to sigprocmask");
 
-	return 0;
-}
-
-static inline int __signal_unset_sigchld(void)
-{
-	struct sigaction dummy;
-
-	if (bus == NULL)
-		return 0;
-
-	dbus_connection_close(bus);
-	if (sigaction(SIGCHLD, &old_sigchild, &dummy) < 0)
-		return -1;
-
-	return 0;
-}
-
-static inline int __signal_block_sigchld(void)
-{
-	sigset_t newmask;
-
-	sigemptyset(&newmask);
-	sigaddset(&newmask, SIGCHLD);
-
-	if (sigprocmask(SIG_BLOCK, &newmask, &oldmask) < 0) {
-		_E("SIG_BLOCK error");
+	sfd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
+	if (sfd == -1) {
+		_E("failed to create signalfd for SIGCHLD");
 		return -1;
 	}
 
-	_D("SIGCHLD blocked");
-
-	return 0;
+	return sfd;
 }
 
 static inline int __signal_unblock_sigchld(void)

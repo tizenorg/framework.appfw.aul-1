@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<node name="/org/tizen/aul/delegator">
+	<interface name="org.tizen.aul.delegator">
+		<method name="Launch">
+			<arg type="s" name="container" direction="in" />
+			<arg type="s" name="bundle" direction="in" />
+			<arg type="i" name="ret" direction="out" />
+		</method>
+	</interface>
+</node>

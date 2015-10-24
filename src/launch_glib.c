@@ -19,7 +19,7 @@
  *
  */
 
-
+#define _GNU_SOURCE
 #include <glib.h>
 #include <poll.h>
 #include <bundle.h>
@@ -28,6 +28,7 @@
 #include "launch.h"
 #include "simple_util.h"
 #include <Ecore.h>
+#include <bundle_internal.h>
 
 static GSource *src;
 
@@ -124,9 +125,7 @@ SLPAPI int aul_launch_init(
 
 	gpollfd = (GPollFD *) g_malloc(sizeof(GPollFD));
 	if (gpollfd == NULL) {
-		_E("out of memory");
 		g_source_unref(src);
-		close(fd);
 		return AUL_R_ERROR;
 	}
 
@@ -164,10 +163,12 @@ SLPAPI int aul_launch_argv_handler(int argc, char **argv)
 	if (b == NULL) {
 		_E("bundle for APP_START is NULL");
 	}
-	if (g_idle_add(__app_start_internal, b) > 0)
+	if (g_idle_add_full(G_PRIORITY_DEFAULT, __app_start_internal, b, NULL) > 0)
 		return AUL_R_OK;
-	else
+	else {
+		_E("g_idle_add_full() failed.");
 		return AUL_R_ERROR;
+	}
 }
 
 SLPAPI int aul_launch_argv_handler_for_efl(int argc, char **argv)
@@ -184,7 +185,7 @@ SLPAPI int aul_launch_argv_handler_for_efl(int argc, char **argv)
 		_E("bundle for APP_START is NULL");
 	}
 
-	idler = ecore_idler_add(__app_start_internal, b);
+	idler = ecore_idler_add((Ecore_Task_Cb)__app_start_internal, b);
 	if (idler)
 		return AUL_R_OK;
 	else

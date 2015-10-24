@@ -23,31 +23,44 @@
 #ifndef __AUL_UTIL_H_
 #define __AUL_UTIL_H_
 
-#define AUL_UTIL_PID -2
+#include <glib.h>
+#include "app_launchpad_types.h"
+
+#define SYSTEM_UID	200
+#define APP_UID		5000
 
 #define MAX_PACKAGE_STR_SIZE 512
 #define MAX_PACKAGE_APP_PATH_SIZE 512
 #define MAX_RUNNING_APP_INFO 512
 
-typedef struct _app_status_info_t{
-	char appid[MAX_PACKAGE_STR_SIZE];
-	char app_path[MAX_PACKAGE_APP_PATH_SIZE];
-	char caller[MAX_PACKAGE_STR_SIZE];
+typedef struct _app_status_info_t app_status_info_t;
+typedef struct _pkg_status_info_t pkg_status_info_t;
+
+struct _app_status_info_t {
+	char *appid;
+	char *app_path;
+	char *caller;
+	char *pkgid;
+	char *exec_label;
 	int status;
 	int pid;
 	int pad_pid;
-} app_status_info_t;
+	int last_caller_pid;
+	int is_subapp;
+	pkg_status_info_t *pkginfo;
+	GList *shared_info_list;
+};
+
+struct _pkg_status_info_t {
+	char *pkgid;
+	int status;
+	GSList *ui_list;
+        GSList *svc_list;
+};
 
 struct amdmgr {
 	struct appinfomgr *af;  /* appinfo manager */
-	struct cginfo *cg;  /* cgroup infomation */
 };
 
-int _add_app_status_info_list(char *appid, int pid);
-int _update_app_status_info_list(int pid, int status);
-int _remove_app_status_info_list(int pid);
-
 #endif
-
-
 

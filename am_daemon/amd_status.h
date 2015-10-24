@@ -19,23 +19,48 @@
  *
  */
 
+#ifndef __AUL_AMD_STATUS_H_
+#define __AUL_AMD_STATUS_H_
 
+#include <glib.h>
 
-int _status_add_app_info_list(char *appid, char *app_path,const char *caller, int pid, int pad_pid);
-int _status_update_app_info_list(int pid, int status);
+int _status_add_app_info_list(const char *appid, const char *app_path,
+	const char *caller, int pid, int pad_pid, int is_subapp);
+int _status_update_app_info_list(int pid, int status, gboolean force);
+int _status_update_app_info_caller_pid(int pid, int caller_pid);
+int _status_get_app_info_last_caller_pid(int pid);
 int _status_remove_app_info_list(int pid);
 int _status_get_app_info_status(int pid);
-int _status_app_is_running(char *appid);
+int _status_app_is_running(const char *appid);
+void _status_find_service_apps(int pid, enum app_status, void (*send_event_to_svc_core) (int));
+void _status_check_service_only(int pid, void (*send_event_to_svc_core) (int));
+char* _status_app_get_appid_bypid(int pid);
+
 int _status_send_running_appinfo(int fd);
-int _status_app_is_running_v2(char *appid);
+int _status_app_is_running_v2(const char *appid);
+int _status_app_is_running_v2_cached(const char *appid);
+int _status_app_is_running_from_cache(const char *appid);
 int _status_send_running_appinfo_v2(int fd);
 int _status_get_pkgname_bypid(int pid, char *pkgname, int len);
 int _status_get_appid_bypid(int fd, int pid);
 int _status_get_pkgid_bypid(int fd, int pid);
+int _status_get_cmdline(int fd, int pid);
+int _status_send_group_info(int fd);
 char* _status_get_caller_by_appid(const char *appid);
 int _status_get_cooldown_status(void);
+int _status_set_exec_label(int pid, const char *exec_label);
+const char* _status_get_exec_label(int pid);
+int _status_set_caller_exec_label(int pid, const char *exec_label);
+int _status_add_shared_info(int pid, const char *exec_label, char **paths);
+int _status_clear_shared_info_list(int pid);
+GList* _status_get_shared_info_list(int pid);
 
+gboolean _status_check_window_ready(void);
 
+#ifdef _APPFW_FEATURE_AMD_MODULE_LOG
+int _status_log_save(const char *tag, const char *message);
+int _status_log_write(void);
+#endif
 
 //TODO : remove
 
@@ -53,4 +78,11 @@ enum cooldown_status_val {
 	COOLDOWN_WARNING,
 	COOLDOWN_LIMIT,
 };
+
+typedef struct _shared_info_t {
+	char *owner_exec_label;
+	char **paths;
+} shared_info_t;
+
+#endif
 

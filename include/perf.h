@@ -26,6 +26,7 @@
 #ifdef PERF_ACTIVATE
 
 #include <sys/time.h>
+#include <bundle_internal.h>
 static struct timeval __g_base_time = {
 	.tv_sec = 0,
 	.tv_usec = 0

@@ -19,12 +19,14 @@
  *
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
 
 #include <Ecore.h>
+#include <bundle_internal.h>
 #include "aul.h"
 
 #define ROOT_UID 0
@@ -113,7 +115,7 @@ static int __launch_app_dead_handler(int pid, void *data)
 static Eina_Bool run_func(void *data)
 {
 	int pid = -1;
-	char *str = NULL;
+	const char *str = NULL;
 	if ((pid = launch()) > 0) {
 		printf("... successfully launched\n");
 	} else {
@@ -123,7 +125,7 @@ static Eina_Bool run_func(void *data)
 	str = bundle_get_val(kb, "__LAUNCH_APP_MODE__");
 
 	if( str && strcmp(str, "SYNC") == 0 ) {
-		aul_listen_app_dead_signal(__launch_app_dead_handler, pid);
+		aul_listen_app_dead_signal(__launch_app_dead_handler, (void *)pid);
 	} else {
 		ecore_main_loop_quit();
 	}
@@ -147,8 +149,6 @@ int main(int argc, char **argv)
 
 	gargc = argc;
 	gargv = argv;
-
-	aul_launch_init(NULL, NULL);
 
 	ecore_idler_add(run_func, NULL);
 

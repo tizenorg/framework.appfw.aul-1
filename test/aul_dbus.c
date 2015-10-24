@@ -19,6 +19,7 @@
  *
  */
 
+#define _GNU_SOURCE
 #include <glib.h>
 #include "aul_dbus.h"
 #include <sys/time.h>

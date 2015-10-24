@@ -8,6 +8,6 @@ includedir=@INCLUDEDIR@
 Name: libaul
 Description: new application utility library 
 Version: @VERSION@
-Requires: sqlite3 bundle ail glib-2.0 xdgmime
+Requires: sqlite3 bundle pkgmgr-info glib-2.0 xdgmime
 Libs: -L${libdir} -laul
 Cflags: -I${includedir}

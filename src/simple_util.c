@@ -19,7 +19,7 @@
  *
  */
 
-
+#define _GNU_SOURCE
 #include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -31,7 +31,9 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <linux/un.h>
+#include <glib.h>
 #include "simple_util.h"
+#include "aul_zone.h"
 
 #define BINSH_NAME	"/bin/sh"
 #define BINSH_SIZE	7
@@ -94,17 +96,50 @@ static inline int __find_pid_by_cmdline(const char *dname,
 	return pid;
 }
 
+int __proc_check_app(const char *path, int pid)
+{
+	char buf[MAX_LOCAL_BUFSZ] = {0};
+	char *cmdline;
+	int ret = 0;
+
+	if (!path || pid < 1)
+		return 0;
+
+	snprintf(buf, sizeof(buf), "/proc/%d/cmdline", pid);
+	ret = __read_proc(buf, buf, sizeof(buf));
+	if (ret <= 0)
+		return 0;
+
+	/* support app launched by shell script */
+	cmdline = buf;
+	if (strncmp(buf, BINSH_NAME, BINSH_SIZE) == 0) {
+		cmdline = &buf[BINSH_SIZE + 1];
+	} else if (strncmp(buf, BASH_NAME, BASH_SIZE) == 0) {
+		if (strncmp(&buf[BASH_SIZE + OPROFILE_SIZE + 2], OPTION_VALGRIND_NAME, OPTION_VALGRIND_SIZE) == 0) {
+			cmdline = &buf[BASH_SIZE + OPROFILE_SIZE + OPTION_VALGRIND_SIZE + 3];
+		}
+	}
+
+	if (strncmp(cmdline, path, MAX_LOCAL_BUFSZ - 1) == 0)
+		return pid;
+
+	return 0;
+}
+
+extern gboolean app_group_is_sub_app(int pid);
+
 int __proc_iter_cmdline(
 	int (*iterfunc)(const char *dname, const char *cmdline, void *priv),
 		    void *priv)
 {
-	DIR *dp;
-	struct dirent *dentry;
-	int pid;
-	int ret;
-	char buf[MAX_LOCAL_BUFSZ];
+	DIR *dp = NULL;
+	struct dirent *dentry = NULL;
+	int pid = 0;
+	int ret = 0;
+	char buf[MAX_LOCAL_BUFSZ] = {0,};
 
-	dp = opendir("/proc");
+	snprintf(buf, sizeof(buf), "%sproc", _get_root_path());
+	dp = opendir(buf);
 	if (dp == NULL) {
 		return -1;
 	}
@@ -116,20 +151,46 @@ int __proc_iter_cmdline(
 		if (!isdigit(dentry->d_name[0]))
 			continue;
 
-		snprintf(buf, sizeof(buf), "/proc/%s/cmdline", dentry->d_name);
+		snprintf(buf, sizeof(buf), "%sproc/%s/cmdline", _get_root_path(), dentry->d_name);
 		ret = __read_proc(buf, buf, sizeof(buf));
 		if (ret <= 0)
 			continue;
 
 		/* support app launched by shell script*/
-		if (strncmp(buf, BINSH_NAME, BINSH_SIZE) == 0)
-			pid =
-			    iterfunc(dentry->d_name, &buf[BINSH_SIZE + 1],
-				     priv);
-		else
+		if (strncmp(buf, BINSH_NAME, BINSH_SIZE) == 0) {
+			pid = iterfunc(dentry->d_name, &buf[BINSH_SIZE + 1], priv);
+		}
+		else if (strncmp(buf, VALGRIND_NAME, VALGRIND_SIZE) == 0) {
+			char* ptr = buf + VALGRIND_SIZE + 1;
+
+			// buf comes with double null-terminated string
+			while (1) {
+				while (*ptr) {
+					ptr++;
+				}
+				ptr++;
+
+				if (*ptr == '\0') {	// double null
+					break;
+				}
+
+				// ignore trailing "--"
+				if (strncmp(ptr, "-", 1) != 0) {
+					break;
+				}
+			};
+
+			_D("cmdline is [%s]", ptr);
+			pid = iterfunc(dentry->d_name, ptr, priv);
+		}
+		else {
 			pid = iterfunc(dentry->d_name, buf, priv);
+		}
 
 		if (pid > 0) {
+			if (app_group_is_sub_app(pid))
+				continue;
+
 			closedir(dp);
 			return pid;
 		}
@@ -146,7 +207,7 @@ char *__proc_get_cmdline_bypid(int pid)
 	char buf[MAX_CMD_BUFSZ];
 	int ret;
 
-	snprintf(buf, sizeof(buf), "/proc/%d/cmdline", pid);
+	snprintf(buf, sizeof(buf), "%sproc/%d/cmdline", _get_root_path(), pid);
 	ret = __read_proc(buf, buf, sizeof(buf));
 	if (ret <= 0)
 		return NULL;
@@ -165,7 +226,7 @@ char *__proc_get_cmdline_bypid(int pid)
 			}
 			ptr++;
 
-			if (*ptr == NULL)
+			if (*ptr == '\0')
 				break;
 
 			// ignore trailing "--"
@@ -197,7 +258,7 @@ static inline int __get_pgid_from_stat(int pid)
 	if (pid <= 1)
 		return -1;
 
-	snprintf(buf, sizeof(buf), "/proc/%d/stat", pid);
+	snprintf(buf, sizeof(buf), "%sproc/%d/stat", _get_root_path(), pid);
 	ret = __read_proc(buf, buf, sizeof(buf));
 	if (ret < 0)
 		return -1;
@@ -229,8 +290,10 @@ int __proc_iter_pgid(int pgid, int (*iterfunc) (int pid, void *priv),
 	struct dirent *dentry;
 	int _pgid;
 	int ret = -1;
+	char buf[MAX_LOCAL_BUFSZ] = { 0, };
 
-	dp = opendir("/proc");
+	snprintf(buf, sizeof(buf), "%sproc", _get_root_path());
+	dp = opendir(buf);
 	if (dp == NULL) {
 		return -1;
 	}
@@ -257,10 +320,13 @@ void __trm_app_info_send_socket(char *write_buf)
         int socket_fd = 0;
         int ret = 0;
         struct sockaddr_un addr;
+	char buf[MAX_LOCAL_BUFSZ] = { 0, };
 
 	_D("__trm_app_info_send_socket");
 
-        if (access(trm_socket_for_app_info, F_OK) != 0) {
+	snprintf(buf, sizeof(buf), "%s%s", _get_root_path(), trm_socket_for_app_info);
+
+        if (access(buf, F_OK) != 0) {
 		_E("access");
 		goto trm_end;
 	}
@@ -272,10 +338,10 @@ void __trm_app_info_send_socket(char *write_buf)
         }
 
         memset(&addr, 0, sizeof(addr));
-        snprintf(addr.sun_path, UNIX_PATH_MAX, "%s", trm_socket_for_app_info);
+        snprintf(addr.sun_path, UNIX_PATH_MAX, "%s", buf);
         addr.sun_family = AF_LOCAL;
 
-        ret = connect(socket_fd, (struct sockaddr *) &addr ,sizeof(sa_family_t) + strlen(trm_socket_for_app_info) );
+        ret = connect(socket_fd, (struct sockaddr *) &addr ,sizeof(sa_family_t) + strlen(buf) );
         if (ret != 0) {
                 close(socket_fd);
                 goto trm_end;

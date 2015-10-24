@@ -31,6 +31,18 @@
 #define AUL_DBUS_APPLAUNCH_SIGNAL	"app_launch"
 #define AUL_DBUS_HOMELAUNCH_SIGNAL	"home_launch"
 
+#define AUL_APP_STATUS_DBUS_PATH "/Org/Tizen/Aul/AppStatus"
+#define AUL_APP_STATUS_DBUS_SIGNAL_INTERFACE "org.tizen.aul.AppStatus"
+#define STATUS_FOREGROUND "fg"
+#define STATUS_BACKGROUND "bg"
+
+#define AUL_APP_STATUS_DBUS_LAUNCH_REQUEST "AppLaunch"
+#define AUL_APP_STATUS_DBUS_RESUME_REQUEST "AppResume"
+#define AUL_APP_STATUS_DBUS_TERMINATE_REQUEST "AppTerminate"
+#define AUL_APP_STATUS_DBUS_STATUS_CHANGE "AppStatusChange"
+#define AUL_APP_STATUS_DBUS_GROUP "AppGroup"
+#define AUL_APP_STATUS_DBUS_TERMINATED "AppTerminated"
+
 #ifdef _APPFW_FEATURE_CPU_BOOST
 #define SYSTEM_BUS_NAME       "org.tizen.system.deviced"
 #define SYSTEM_OBJECT_PATH    "/Org/Tizen/System/DeviceD/PmQos"
@@ -62,17 +74,33 @@
 #define RESOURCED_PROC_INTERFACE	"org.tizen.resourced.process"
 #define RESOURCED_PROC_METHOD		"ProcExclude"
 
+#define APPFW_SUSPEND_HINT_PATH	"/Org/Tizen/Appfw/SuspendHint"
+#define APPFW_SUSPEND_HINT_INTERFACE	"org.tizen.appfw.SuspendHint"
+#define APPFW_SUSPEND_HINT_SIGNAL	"SuspendHint"
+
+#define RESOURCED_FREEZER_PATH "/Org/Tizen/Resourced/Freezer"
+#define RESOURCED_FREEZER_INTERFACE	"org.tizen.resourced.freezer"
+#define RESOURCED_FREEZER_SIGNAL	"FreezerState"
+
+#define RESOURCED_ALLOWED_BG_ATTRIBUTE			0x100
+#define RESOURCED_BACKGROUND_MANAGEMENT_ATTRIBUTE	0x200
+#define RESOURCED_API_VER_2_4_ATTRIBUTE			0x400
+
+#define RESOURCED_PROC_PRELAUNCH_SIGNAL "ProcPrelaunch"
 #define RESOURCED_PROC_WATCHDOG_SIGNAL "ProcWatchdog"
+#define RESOURCED_PROC_GROUP_SIGNAL "ProcGroup"
 
 #define PROC_TYPE_EXCLUDE		"exclude"
 #define PROC_TYPE_INCLUDE		"include"
 #define PROC_TYPE_WAKEUP		"wakeup"
 
-#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
-#define DEVICED_PATH_DISPLAY	"/Org/Tizen/System/DeviceD/Display"
-#define DEVICED_INTERFACE_DISPLAY	"org.tizen.system.deviced.display"
-
-#define DEVICED_SIGNAL_LCD_ON			"LCDOn"
-#define DEVICED_SIGNAL_LCD_OFF		"LCDOff"
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+#define TEP_BUS_NAME "org.tizen.system.deviced"
+#define TEP_OBJECT_PATH "/Org/Tizen/System/DeviceD/Tzip"
+#define TEP_INTERFACE_NAME "org.tizen.system.deviced.Tzip"
+#define TEP_MOUNT_METHOD "Mount"
+#define TEP_UNMOUNT_METHOD "Unmount"
+#define TEP_IS_MOUNTED_METHOD "IsMounted"
 #endif
+
 #endif

@@ -19,16 +19,23 @@
  *
  */
 
+#define _GNU_SOURCE
 #include <signal.h>
 #include <Ecore_X.h>
 #include <Ecore_Input.h>
+#ifdef _APPFW_FEATURE_AMD_KEY
 #include <utilX.h>
+#endif
 #include <Ecore.h>
 #include <Evas.h>
 #include <Ecore_Evas.h>
-
+#include <security-server.h>
+#include <aul_svc.h>
 #include <bundle.h>
+#include <bundle_internal.h>
 #include <aul.h>
+#include <aul_svc.h>
+#include <aul_svc_priv_key.h>
 #include <glib.h>
 #ifdef _APPFW_FEATURE_APP_CHECKER
 #include <app-checker-server.h>
@@ -46,6 +53,13 @@
 #include <vconf.h>
 #include <proc_stat.h>
 #include <poll.h>
+#include <ttrace.h>
+#include <sys/smack.h>
+#include <security-server-perm.h>
+
+#ifdef _APPFW_FEATURE_PRIVATE_SERVICE
+#include <cert-service.h>
+#endif
 
 #include "amd_config.h"
 #include "amd_launch.h"
@@ -54,14 +68,20 @@
 #include "amd_key.h"
 #include "app_sock.h"
 #include "simple_util.h"
-#include "amd_cgutil.h"
 #include "launch.h"
 #include "app_signal.h"
+#include "amd_app_group.h"
+#include "amd_request.h"
+
+#define PREEXEC_ACTIVATE
+#include "preexec.h"
 
 #define DAC_ACTIVATE
-
 #include "access_control.h"
 
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+#include "appfw_env.h"
+#endif
 
 #define TERM_WAIT_SEC 3
 #define INIT_PID 1
@@ -73,9 +93,10 @@
 #define SDK_DYNAMIC_ANALYSIS "DYNAMIC_ANALYSIS"
 #define PATH_DA_SO "/home/developer/sdk_tools/da/da_probe.so"
 
+#ifdef _APPFW_FEATURE_FAKE_EFFECT
 #define PHONE_ORIENTATION_MODE "memory/private/sensor/10001"
-#define AMD_EFFECT_IMAGE_ENABLE "db/setting/effect_image"
 #define PHONE_ROTATE_LOCK "db/setting/auto_rotate_screen"
+#endif
 
 #define SYS_MIN_CPU_LOCK_FILE "/sys/devices/system/cpu/cpufreq/slp/min_cpu_lock"
 #define MIN_CPU_LCK_CNT 0
@@ -84,18 +105,33 @@
 #define HIDE_INDICATOR 0
 #define SHOW_INDICATOR 1
 
+#define PROC_STATUS_LAUNCH 0
+#define PROC_STATUS_FG 3
+#define PROC_STATUS_BG 4
 #ifdef _APPFW_FEATURE_CPU_BOOST
 #define APP_BOOSTING_PERIOD 1500 //msec
+#endif
+
+#ifdef _APPFW_FEATURE_PRIVATE_SERVICE
+#define OSP_K_LAUNCH_TYPE   "__OSP_LAUNCH_TYPE__"
+#define OSP_V_LAUNCH_TYPE_DATACONTROL	"datacontrol"
 #endif
 
 static char *amd_cmdline;
 
 struct appinfomgr *_laf;
-struct cginfo *_lcg;
 
 DBusConnection *conn;
+#ifdef _APPFW_FEATURE_AMD_KEY
 guint grab_timer_id;
+#endif
 
+static GList *_fgmgr_list;
+
+struct fgmgr {
+	guint tid;
+	int pid;
+};
 
 #if 0
 /*Unused data structure. Will be removed*/
@@ -121,10 +157,12 @@ static const char *atom_name = "_E_COMP_FAKE_LAUNCH_IMAGE"; // Atomic ID string
 static Ecore_X_Atom ATOM_IMAGE_EFFECT; //Atomic ID
 static void __amd_effect_image_file_set(char *image_file);
 static void __amd_send_message_to_e17(int screenmode, const char * indicator, int effect_type, int theme);
-static int __amd_change_min_cpulock_count(int value);
-static Eina_Bool __amd_restore_min_cpulock_count_cb(void *data);
 static void __set_reply_handler(int fd, int pid, int clifd, int cmd);
 static void __real_send(int clifd, int ret);
+static int __send_proc_prelaunch_signal(const char *appid, const char *pkgid, int attribute);
+int invoke_dbus_method_sync(const char *dest, const char *path,
+			    const char *interface, const char *method,
+			    const char *sig, char *param[]);
 
 static void _set_sdk_env(const char* appid, char* str) {
 	char buf[MAX_LOCAL_BUFSZ];
@@ -183,6 +221,21 @@ static void _set_env(const char *appid, bundle * kb, const char *hwacc)
 		setenv("HWACC", hwacc, 1);
 }
 
+static void __set_oom(void)
+{
+	char buf[MAX_OOM_ADJ_BUFSZ] = {0,};
+	FILE *fp = NULL;
+
+	/* we should reset oomadj value as default because child
+	inherits from parent oom_adj*/
+	snprintf(buf, MAX_OOM_ADJ_BUFSZ, "/proc/%d/oom_score_adj", getpid());
+	fp = fopen(buf, "w");
+	if (fp == NULL)
+		return;
+	fprintf(fp, "%d", 100);
+	fclose(fp);
+}
+
 static void _prepare_exec(const char *appid, bundle *kb)
 {
 	const struct appinfo *ai;
@@ -199,14 +252,18 @@ static void _prepare_exec(const char *appid, bundle *kb)
 	signal(SIGTERM, SIG_DFL);
 	signal(SIGCHLD, SIG_DFL);
 
+	__set_oom();
+
 	ai = appinfo_find(_laf, appid);
 
 	app_path = appinfo_get_value(ai, AIT_EXEC);
 	pkg_type = appinfo_get_value(ai, AIT_TYPE);
 	hwacc = appinfo_get_value(ai, AIT_HWACC);
 
+	__preexec_run(pkg_type, appid, app_path);
+
 	/* SET PRIVILEGES*/
-	 _D("appid : %s / pkg_type : %s / app_path : %s ", appid, pkg_type, app_path);
+	 SECURE_LOGD("appid : %s / pkg_type : %s / app_path : %s ", appid, pkg_type, app_path);
 	if (pkg_type && strncmp(pkg_type, "wgt", 3) !=0 && (ret = __set_access(appid, pkg_type, app_path)) < 0) {
 		 _D("fail to set privileges - check your package's credential : %d\n", ret);
 		return;
@@ -233,34 +290,6 @@ static void _prepare_exec(const char *appid, bundle *kb)
 	_set_env(appid, kb, hwacc);
 }
 
-static int _add_cgroup(struct cginfo *cg, const char *group, int pid)
-{
-	int r;
-
-	r = cgutil_exist_group(cg, CTRL_MGR, group);
-	if (r == -1) {
-		_E("exist check error: %s", strerror(errno));
-		return -1;
-	}
-
-	if (r == 0) { /* not exist */
-		r = cgutil_create_group(cg, CTRL_MGR, group);
-		if (r == -1) {
-			_E("create group error");
-			return -1;
-		}
-	}
-
-	r = cgutil_group_add_pid(cg, CTRL_MGR, group, pid);
-	if (r == -1) {
-		_E("add pid to group error");
-		cgutil_remove_group(cg, CTRL_MGR, group);
-		return -1;
-	}
-
-	return 0;
-}
-
 static char **__create_argc_argv(bundle * kb, int *margc)
 {
 	char **argv;
@@ -271,18 +300,13 @@ static char **__create_argc_argv(bundle * kb, int *margc)
 	*margc = argc;
 	return argv;
 }
-static void _do_exec(struct cginfo *cg, const char *cmd, const char *group, bundle *kb)
+static void _do_exec(const char *cmd, const char *group, bundle *kb)
 {
 	gchar **argv;
 	gint argc;
 	char **b_argv;
 	int b_argc;
 	gboolean b;
-	int r;
-
-	r = _add_cgroup(cg, group, getpid());
-	if (r == -1)
-		return;
 
 	b = g_shell_parse_argv(cmd, &argc, &argv, NULL);
 
@@ -328,7 +352,7 @@ static inline int __send_app_launch_signal(int launch_pid)
 	dbus_connection_flush(conn);
 	dbus_message_unref(message);
 
-	_D("send launch signal done\n");
+	_W("send launch signal done: %d", launch_pid);
 
 	return 0;
 }
@@ -345,10 +369,12 @@ static int __send_watchdog_signal(int pid, int signal_num)
 		return -1;
 	}
 
+#ifdef _APPFW_FEATURE_COOLDOWN_MODE_SUPPORT
 	if(_status_get_cooldown_status() == COOLDOWN_LIMIT) {
 		_E("[Info]cooldown status : LimitAction");
 		return -1;
 	}
+#endif // _APPFW_FEATURE_COOLDOWN_MODE_SUPPORT
 
 	message = dbus_message_new_signal(RESOURCED_PROC_OBJECT,
 					  RESOURCED_PROC_INTERFACE,
@@ -370,7 +396,40 @@ static int __send_watchdog_signal(int pid, int signal_num)
 	dbus_connection_flush(conn);
 	dbus_message_unref(message);
 
-	_D("send launch signal done\n");
+	_W("send a watchdog signal done: %d", pid);
+
+	return 0;
+}
+
+static int __send_proc_prelaunch_signal(const char *appid, const char *pkgid, int attribute)
+{
+	DBusMessage *message;
+
+	if (conn == NULL)
+		return -1;
+
+	message = dbus_message_new_signal(RESOURCED_PROC_OBJECT,
+					  RESOURCED_PROC_INTERFACE,
+					  RESOURCED_PROC_PRELAUNCH_SIGNAL);
+
+	if (dbus_message_append_args(message,
+					 DBUS_TYPE_STRING, &appid,
+					 DBUS_TYPE_STRING, &pkgid,
+				     DBUS_TYPE_INT32, &attribute,
+				     DBUS_TYPE_INVALID) == FALSE) {
+		_E("Failed to load data error");
+		return -1;
+	}
+
+	if (dbus_connection_send(conn, message, NULL) == FALSE) {
+		_E("dbus send error");
+		return -1;
+	}
+
+	dbus_connection_flush(conn);
+	dbus_message_unref(message);
+
+	SECURE_LOGW("send a prelaunch signal done: appid(%s) pkgid(%s) attribute(%x)", appid, pkgid, attribute);
 
 	return 0;
 }
@@ -381,7 +440,6 @@ static int __check_cmdline(int ret)
 	int wait_count;
 	int cmdline_changed = 0;
 	int cmdline_exist = 0;
-	int r;
 
 	if (ret <= 1)
 		return -1;
@@ -392,7 +450,10 @@ static int __check_cmdline(int ret)
 		cmdline = __proc_get_cmdline_bypid(ret);
 		if (cmdline == NULL) {
 			_E("error founded when being launched with %d", ret);
-
+			if (cmdline_exist || cmdline_changed) {
+				_E("The app process might be terminated while we are wating %d", ret);
+				break;
+			}
 		} else if (strcmp(cmdline, amd_cmdline)) {
 			free(cmdline);
 			cmdline_changed = 1;
@@ -408,6 +469,7 @@ static int __check_cmdline(int ret)
 	} while (wait_count <= 20);	/* max 50*20ms will be sleep*/
 
 	if ((!cmdline_exist) && (!cmdline_changed)) {
+		_E("cmdline_exist 0 & cmdline_changed 0");
 		return -1;
 	}
 
@@ -417,21 +479,16 @@ static int __check_cmdline(int ret)
 	return ret;
 }
 
-int service_start(struct cginfo *cg, const char *group, const char *cmd, bundle *kb)
+int start_process(const char *group, const char *cmd, bundle *kb)
 {
 	int r;
 	pid_t p;
 
-	if (!cg || !group || !*group || !cmd || !*cmd) {
-		errno = EINVAL;
-		_E("service start: %s", strerror(errno));
-		return -1;
-	}
-
 	p = fork();
 	switch (p) {
 	case 0: /* child process */
-		_D("start service");
+		_D("start application");
+		_signal_unblock_sigchld();
 #ifdef _APPFW_FEATURE_PRIORITY_CHANGE
 		r = setpriority(PRIO_PROCESS, 0, 0);
 		if (r == -1)
@@ -440,32 +497,71 @@ int service_start(struct cginfo *cg, const char *group, const char *cmd, bundle 
 					getpid(), errno, strerror(errno));
 		}
 #endif
-		_do_exec(cg, cmd, group, kb);
+		_do_exec(cmd, group, kb);
 		/* exec error */
 
 		exit(0);
 		break;
 	case -1:
-		_E("service start: fork: %s", strerror(errno));
+		_E("application start: fork: %s", strerror(errno));
 		r = -1;
 		break;
 	default: /* parent process */
-		_D("child process: %d", p);
+		_W("child process: %d", p);
 		r = __check_cmdline(p);
 		if(r > 0)
 			__send_app_launch_signal(r);
+		else
+			_E("cmdline change failed.");
 		break;
 	}
 
 	return r;
 }
 
-int _start_srv(const struct appinfo *ai, bundle *kb)
+static int __check_ver(const char *required, const char *actual)
+{
+	int ret = 0;
+	if (required && actual) {
+		ret = strverscmp(required, actual); // should 0 or less
+		if (ret < 1)
+			return 1;
+	}
+
+	return 0;
+}
+
+static int __get_prelaunch_attribute(const struct appinfo *ai)
+{
+	int attribute_val = 0;
+	const char *attribute_str = NULL;
+
+	attribute_str = appinfo_get_value(ai, AIT_ALLOWED_BG);
+	if (attribute_str && strncmp(attribute_str, "ALLOWED_BG", sizeof("ALLOWED_BG")) == 0) {
+		attribute_val |= RESOURCED_ALLOWED_BG_ATTRIBUTE;
+	}
+
+#ifdef _APPFW_FEATURE_BACKGROUND_MANAGEMENT
+	attribute_val |= RESOURCED_BACKGROUND_MANAGEMENT_ATTRIBUTE;
+#endif
+
+	attribute_str = appinfo_get_value(ai, AIT_API_VER);
+	if (attribute_str && __check_ver("2.4", attribute_str)) {
+		attribute_val |= RESOURCED_API_VER_2_4_ATTRIBUTE;
+	}
+
+	return attribute_val;
+}
+
+int _start_srv(const struct appinfo *ai)
 {
 	int r;
+	bundle *b = NULL;
 	const char *group;
 	const char *cmd;
 	const char *pkgid;
+	const char *appid = NULL;
+	int prelaunch_attribute = 0;
 
 	group = appinfo_get_filename(ai);
 
@@ -475,15 +571,37 @@ int _start_srv(const struct appinfo *ai, bundle *kb)
 		return -1;
 	}
 
-	r = service_start(_lcg, group, cmd, kb);
+	appid = appinfo_get_value(ai, AIT_NAME);
+	pkgid = appinfo_get_value(ai, AIT_PKGID);
+
+	prelaunch_attribute = __get_prelaunch_attribute(ai);
+	if ((prelaunch_attribute & RESOURCED_ALLOWED_BG_ATTRIBUTE) ||
+		!(prelaunch_attribute & RESOURCED_API_VER_2_4_ATTRIBUTE)) {
+		SECURE_LOGD("[__SUSPEND__] allowed background, appid :%s, app_type: %s, api version: %s",
+			appid, APP_TYPE_SERVICE, appinfo_get_value(ai,  AIT_API_VER));
+		if (b == NULL) {
+			b = bundle_create();
+		}
+
+		bundle_add(b, AUL_K_ALLOWED_BG, "ALLOWED_BG");
+	}
+
+	__send_proc_prelaunch_signal(appid, pkgid, prelaunch_attribute);
+
+	r = start_process(group, cmd, b);
+	if (b) {
+		bundle_free(b);
+		b = NULL;
+	}
+
 	if (r == -1) {
 		_E("start service: '%s': failed", group);
+
 		return -1;
 	}
 
-	pkgid = appinfo_get_value(ai, AIT_PKGID);
-	proc_cgroup_launch(PROC_CGROUP_SET_SERVICE_REQUEST, r, group, pkgid);
-	_status_add_app_info_list(group, cmd, NULL, r, -1);
+	aul_send_app_launch_request_signal(r, group, pkgid, APP_TYPE_SERVICE);
+	_status_add_app_info_list(group, cmd, NULL, r, -1, 0);
 
 	return 0;
 }
@@ -493,7 +611,6 @@ static void _free_kt(struct ktimer *kt)
 	if (!kt)
 		return;
 
-	cgutil_unref(&kt->cg);
 	free(kt->group);
 	free(kt);
 }
@@ -505,21 +622,11 @@ static void _kill_pid(struct cginfo *cg, const char *group, pid_t pid)
 	if (pid <= INIT_PID) /* block sending to all process or init */
 		return;
 
-	r = cgutil_exist_group(cg, CTRL_MGR, group);
-	if (r == -1) {
-		_E("send SIGKILL: exist: %s", strerror(errno));
-		return;
-	}
-	if (r == 0) {
-		_D("send SIGKILL: '%s' not exist", group);
-		return;
-	}
-
 	/* TODO: check pid exist in group */
 
 	r = kill(pid, 0);
 	if (r == -1) {
-		_D("send SIGKILL: pid %d not exist", pid);
+		_E("send SIGKILL: pid %d not exist", pid);
 		return;
 	}
 
@@ -554,7 +661,6 @@ static void _add_list(struct cginfo *cg, const char *group, pid_t pid)
 		return;
 	}
 
-	kt->cg = cgutil_ref(cg);
 	kt->tid = g_timeout_add_seconds(TERM_WAIT_SEC, _ktimer_cb, kt);
 
 	_kill_list = g_list_append(_kill_list, kt);
@@ -588,19 +694,6 @@ static int _kill_pid_cb(void *user_data, const char *group, pid_t pid)
 	_add_list(user_data, group, pid);
 
 	return 0;
-}
-
-int service_stop(struct cginfo *cg, const char *group)
-{
-	if (!cg || !group || !*group) {
-		errno = EINVAL;
-		return -1;
-	}
-
-	_D("service_stop, group %s", group);
-
-	return cgutil_group_foreach_pid(cg, CTRL_MGR, FILENAME(group),
-			_kill_pid_cb, cg);
 }
 
 void service_release(const char *group)
@@ -658,10 +751,33 @@ int _resume_app(int pid, int clifd)
 		}
 		__real_send(clifd, ret);
 	}
-	_D("resume done\n");
+	_W("resume done\n");
 
 	if (ret > 0)
 		__set_reply_handler(ret, pid, clifd, APP_RESUME_BY_PID);
+
+	return ret;
+}
+
+int _pause_app(int pid, int clifd)
+{
+	int dummy;
+	int ret;
+	if ((ret =
+	    __app_send_raw_with_delay_reply(pid, APP_PAUSE_BY_PID, (unsigned char *)&dummy,
+			    sizeof(int))) < 0) {
+		if (ret == -EAGAIN)
+			_E("pause packet timeout error");
+		else {
+			_E("iconify failed - %d pause fail\n", pid);
+			_E("we will term the app - %d\n", pid);
+			_send_to_sigkill(pid);
+			ret = -1;
+		}
+	}
+
+	_D("pause done\n");
+	close(clifd);
 
 	return ret;
 }
@@ -670,9 +786,18 @@ int _fake_launch_app(int cmd, int pid, bundle * kb, int clifd)
 {
 	int datalen;
 	int ret;
-	bundle_raw *kb_data;
+	bundle_raw *kb_data = NULL;
 
-	bundle_encode(kb, &kb_data, &datalen);
+	if (!kb){
+		__real_send(clifd, -EINVAL);
+		return -EINVAL;
+	}
+
+	ret = bundle_encode(kb, &kb_data, &datalen);
+	if (ret != BUNDLE_ERROR_NONE) {
+		__real_send(clifd, -EINVAL);
+		return -EINVAL;
+	}
 	if ((ret = __app_send_raw_with_delay_reply(pid, cmd, kb_data, datalen)) < 0) {
 		_E("error request fake launch - error code = %d", ret);
 		__real_send(clifd, ret);
@@ -687,6 +812,9 @@ int _fake_launch_app(int cmd, int pid, bundle * kb, int clifd)
 
 static void __real_send(int clifd, int ret)
 {
+	if(clifd <= 0) {
+		return;
+	}
 	if (send(clifd, &ret, sizeof(int), MSG_NOSIGNAL) < 0) {
 		if (errno == EPIPE) {
 			_E("send failed due to EPIPE.\n");
@@ -764,24 +892,24 @@ static gboolean __reply_handler(gpointer data)
 	close(fd);
 
 	if(res < 0) {
-		if ( cmd == APP_TERM_BY_PID ) {
+		if (cmd == APP_TERM_BY_PID || cmd == APP_TERM_BGAPP_BY_PID) {
 			__real_send(clifd, -1);
-		} else if ( cmd == APP_START_ASYNC ) {
+		} else if (cmd == APP_START_ASYNC || cmd == APP_PAUSE_BY_PID) {
 			close(clifd);
 		} else {
 			__real_send(clifd, res);
 		}
 	} else {
-		if ( cmd == APP_TERM_BY_PID ) {
+		if (cmd == APP_TERM_BY_PID || cmd == APP_TERM_BGAPP_BY_PID) {
 			__real_send(clifd, 0);
-		} else if ( cmd == APP_START_ASYNC ) {
+		} else if (cmd == APP_START_ASYNC || cmd == APP_PAUSE_BY_PID) {
 			close(clifd);
 		} else {
 			__real_send(clifd, pid);
 		}
 	}
 
-	_D("listen fd(%d) , send fd(%d), pid(%d), cmd(%d)", fd, clifd, pid, cmd);
+	_W("listen fd(%d) , send fd(%d), pid(%d), cmd(%d)", fd, clifd, pid, cmd);
 
 	g_source_remove(r_info->timer_id);
 	g_source_remove_poll(r_info->src, r_info->gpollfd);
@@ -796,6 +924,9 @@ static gboolean __recv_timeout_handler(gpointer data)
 {
 	struct reply_info *r_info = (struct reply_info *) data;
 	int fd = r_info->gpollfd->fd;
+	char *appid = NULL;
+	const struct appinfo *ai;
+	int task_manage = 0;
 
 	_E("application is not responding : pid(%d) cmd(%d)", r_info->pid, r_info->cmd);
 
@@ -810,15 +941,27 @@ static gboolean __recv_timeout_handler(gpointer data)
 #ifdef _APPFW_FEATURE_MULTI_INSTANCE
 	case APP_START_MULTI_INSTANCE:
 #endif
-		__send_watchdog_signal(r_info->pid, SIGKILL);
+		appid = _status_app_get_appid_bypid(r_info->pid);
+		if(appid == NULL)
+			break;
+		ai = appinfo_find(_laf, appid);
+		if(ai == NULL) {
+			_E("ai is NULL");
+			break;
+		}
+		task_manage = appinfo_get_boolean(ai, AIT_TASKMANAGE);
+		if(task_manage) {
+			__send_watchdog_signal(r_info->pid, SIGKILL);
+		}
 		break;
 	case APP_TERM_BY_PID:
+	case APP_TERM_BGAPP_BY_PID:
 		if (_send_to_sigkill(r_info->pid) < 0) {
 			_E("fail to killing - %d\n", r_info->pid);
 			__real_send(r_info->clifd, -1);
-			return -1;
+		} else {
+			__real_send(r_info->clifd, 0);
 		}
-		__real_send(r_info->clifd, 0);
 		break;
 	}
 
@@ -844,7 +987,6 @@ static void __set_reply_handler(int fd, int pid, int clifd, int cmd)
 		g_source_unref(src);
 		return;
 	}
-
 	gpollfd->events = POLLIN;
 	gpollfd->fd = fd;
 
@@ -862,7 +1004,6 @@ static void __set_reply_handler(int fd, int pid, int clifd, int cmd)
 	r_info->gpollfd = gpollfd;
 	r_info->cmd = cmd;
 
-
 	r_info->timer_id = g_timeout_add(5000, __recv_timeout_handler, (gpointer) r_info);
 	g_source_add_poll(src, gpollfd);
 	g_source_set_callback(src, (GSourceFunc) __reply_handler,
@@ -873,10 +1014,53 @@ static void __set_reply_handler(int fd, int pid, int clifd, int cmd)
 	_D("listen fd : %d, send fd : %d", fd, clifd);
 }
 
+void _term_sub_app(int pid)
+{
+	int dummy;
+	int ret;
+	char *appid = NULL;
+	const char *pkgid = NULL;
+	const char *type = NULL;
+	const struct appinfo *ai = NULL;
+
+	appid = _status_app_get_appid_bypid(pid);
+	ai = appinfo_find(_laf, appid);
+	pkgid = appinfo_get_value(ai, AIT_PKGID);
+	type = appinfo_get_value(ai, AIT_COMPTYPE);
+
+	aul_send_app_terminate_request_signal(pid, appid, pkgid, type);
+	if ( (ret = __app_send_raw_with_noreply(pid, APP_TERM_BY_PID_ASYNC,
+					(unsigned char *)&dummy, sizeof(int))) < 0) {
+		_E("terminate packet send error - use SIGKILL");
+		if (_send_to_sigkill(pid) < 0) {
+			_E("fail to killing - %d\n", pid);
+			return;
+		}
+	}
+}
+
 int _term_app(int pid, int clifd)
 {
 	int dummy;
 	int ret;
+
+	if (app_group_is_leader_pid(pid)) {
+		int cnt;
+		int *pids = NULL;
+		int i;
+
+		app_group_get_group_pids(pid, &cnt, &pids);
+		if (cnt > 0) {
+			for (i = cnt-1 ; i>=0; i--) {
+				if (i != 0)
+					_term_sub_app(pids[i]);
+				app_group_remove(pids[i]);
+
+			}
+		}
+		if (pids)
+			free(pids);
+	}
 
 	if ( (ret = __app_send_raw_with_delay_reply
 	    (pid, APP_TERM_BY_PID, (unsigned char *)&dummy, sizeof(int))) < 0) {
@@ -891,6 +1075,66 @@ int _term_app(int pid, int clifd)
 	_D("term done\n");
 	if (ret > 0)
 		__set_reply_handler(ret, pid, clifd, APP_TERM_BY_PID);
+
+	return 0;
+}
+
+int _term_req_app(int pid, int clifd)
+{
+	int dummy;
+	int ret;
+
+	if ( (ret = __app_send_raw_with_delay_reply
+		(pid, APP_TERM_REQ_BY_PID, (unsigned char *)&dummy, sizeof(int))) < 0) {
+		_D("terminate req send error");
+		__real_send(clifd, ret);
+	}
+
+	if (ret > 0)
+		__set_reply_handler(ret, pid, clifd, APP_TERM_REQ_BY_PID);
+
+	return 0;
+}
+
+int _term_bgapp(int pid, int clifd)
+{
+	int dummy;
+	int fd;
+
+	if (app_group_is_leader_pid(pid)) {
+		int cnt;
+		int *pids = NULL;
+		int i;
+		int status = -1;
+
+		app_group_get_group_pids(pid, &cnt, &pids);
+		if (cnt > 0) {
+			status = _status_get_app_info_status(pids[cnt-1]);
+			if(status == STATUS_BG) {
+				for (i = cnt-1 ; i>=0; i--) {
+					if (i != 0)
+						_term_sub_app(pids[i]);
+					app_group_remove(pids[i]);
+				}
+			}
+		}
+		if (pids)
+			free(pids);
+	}
+
+	if ( (fd = __app_send_raw_with_delay_reply
+	    (pid, APP_TERM_BGAPP_BY_PID, (unsigned char *)&dummy, sizeof(int))) < 0) {
+		_D("terminate packet send error - use SIGKILL");
+		if (_send_to_sigkill(pid) < 0) {
+			_E("fail to killing - %d\n", pid);
+			__real_send(clifd, -1);
+			return -1;
+		}
+		__real_send(clifd, 0);
+	}
+	_D("term_bgapp done\n");
+	if (fd > 0)
+		__set_reply_handler(fd, pid, clifd, APP_TERM_BGAPP_BY_PID);
 
 	return 0;
 }
@@ -954,7 +1198,7 @@ static void __pre_launching_processing(const char* app_id)
         if (S_ISDIR(file_status.st_mode)) {
             int ret;
             DIR *dir = NULL;
-            struct dirent entry, *result;
+            struct dirent entry, *result = NULL;
 
             dir = opendir(PRE_LAUNCHING_LIST_DIR);
 
@@ -985,12 +1229,11 @@ static void __pre_launching_processing(const char* app_id)
 static int __nofork_processing(int cmd, int pid, bundle * kb, int clifd)
 {
 	int ret = -1;
-	int r;
+#ifdef _APPFW_FEATURE_CPU_BOOST
 	const char *operation;
 
 	operation = bundle_get_val(kb, "__APP_SVC_OP_TYPE__");
 
-#ifdef _APPFW_FEATURE_CPU_BOOST
 	//TODO: CPU boosting for relaunching will be removed.
 	//Home screen requests CPU boosting on launching or relaunching during 200 msec.
 	if (cmd == APP_OPEN ||
@@ -1005,7 +1248,7 @@ static int __nofork_processing(int cmd, int pid, bundle * kb, int clifd)
 		_D("%s-%s : %d", SYSTEM_INTERFACE_NAME, SYSTEM_METHOD_NAME, ret);
 	}
 #endif
-	_D("__nofork_processing, cmd: %d, pid: %d", cmd, pid);
+	_W("__nofork_processing, cmd: %d, pid: %d", cmd, pid);
 	switch (cmd) {
 	case APP_OPEN:
 	case APP_RESUME:
@@ -1025,6 +1268,9 @@ static int __nofork_processing(int cmd, int pid, bundle * kb, int clifd)
 		if ((ret = _fake_launch_app(cmd, pid, kb, clifd)) < 0)
 			_E("fake_launch failed. error code = %d", ret);
 		_D("fake launch done");
+		break;
+
+	default:
 		break;
 	}
 
@@ -1053,53 +1299,38 @@ struct context{
 	Ecore_Timer *timer;
 };
 
-static int __amd_change_min_cpulock_count(int value)
-{
-	int fd = -1;
-	char buf[16]={0,};
-	fd = open(SYS_MIN_CPU_LOCK_FILE, O_WRONLY);
-	if (fd == -1)
-		return -1;
-	snprintf(buf, sizeof(buf), "%d", value);
-	if (write(fd, buf, strlen(buf)) < 0) {
-		_E("[AMD]: Unable to change min_cpu_lock value!, err: %s\n",strerror(errno));
-		close(fd);
-		return -1;
-	}
-	close(fd);
-	_D("[AMD]: Succesfully changed min cpu value to %d\n", value);
-	return 0;
-}
-
-static Eina_Bool __amd_restore_min_cpulock_count_cb(void *data)
-{
-	struct context *ctxt = data;
-	if (ctxt->timer)
-		ctxt->timer = NULL;
-	__amd_change_min_cpulock_count(MIN_CPU_LCK_CNT);
-	return ECORE_CALLBACK_CANCEL;
-}
-
+#ifdef _APPFW_FEATURE_FAKE_EFFECT
 static void __amd_effect_image_file_set(char *image_file)
 {
 	Ecore_X_Window root_win;
+
+	if(!_window_is_initialized())
+		return;
+
 	root_win = ecore_x_window_root_first_get();
 	SECURE_LOGD("path : %s", image_file);
-	ecore_x_window_prop_string_set(root_win, ATOM_IMAGE_EFFECT,image_file);
+	ecore_x_window_prop_string_set(root_win, ATOM_IMAGE_EFFECT, image_file);
 }
 
 
 static void __amd_send_message_to_e17(int screenmode, const char * indicator, int effect_type, int theme)
 {
+	traceBegin(TTRACE_TAG_APPLICATION_MANAGER, "AUL:AMD:EFFECT_START");
 	Ecore_X_Window root_win;
 	int ret;
+
+	if (!_window_is_initialized()) {
+		traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
+		return;
+	}
+
 	root_win = ecore_x_window_root_first_get();
 	 _D("root win : %x",root_win);
 	int screen_orientation[5]={0,0,270,180,90};
 	if (screenmode > 4 || screenmode < 0)
 		screenmode=0;
 
-	if (strncmp(indicator, "true", 4) == 0){
+	if (strncmp(indicator, "true", 4) == 0) {
 		_D("[LAUNCHING EFFECT]: screen mode(%d), effect type(%d), theme(%d), indicator show",
 			screen_orientation[screenmode], effect_type, theme);
 		ret = ecore_x_client_message32_send (root_win, ATOM_IMAGE_EFFECT,
@@ -1107,7 +1338,7 @@ static void __amd_send_message_to_e17(int screenmode, const char * indicator, in
 			screen_orientation[screenmode],
 			SHOW_INDICATOR, theme, 0);
 
-	}else{
+	} else {
 		_D("[LAUNCHING EFFECT]: screen mode(%d), effect type(%d), theme(%d), indicator show",
 			screen_orientation[screenmode], effect_type, theme);
 		ret = ecore_x_client_message32_send (root_win, ATOM_IMAGE_EFFECT,
@@ -1117,9 +1348,9 @@ static void __amd_send_message_to_e17(int screenmode, const char * indicator, in
 	}
 	ecore_x_flush();
 	_D("ecore_x_client_message32_send : %d",ret);
+	traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 }
-
-
+#endif
 
 static int append_variant(DBusMessageIter *iter, const char *sig, char *param[])
 {
@@ -1203,6 +1434,7 @@ int invoke_dbus_method_sync(const char *dest, const char *path,
 	return ret;
 }
 
+#ifdef _APPFW_FEATURE_AMD_KEY
 static gboolean __grab_timeout_handler(gpointer data)
 {
 	int pid = (int) data;
@@ -1210,179 +1442,189 @@ static gboolean __grab_timeout_handler(gpointer data)
 	if(_input_window_get() != 0)
 		ecore_x_pointer_ungrab();
 	_D("pid(%d) ecore_x_pointer_ungrab", pid);
+	if(_key_ungrab(KEY_BACK) < 0) {
+		_W("back key ungrab error");
+	} else {
+		_D("back key ungrab");
+	}
+
+	return FALSE;
+}
+#endif
+
+static gboolean __fg_timeout_handler(gpointer data)
+{
+	struct fgmgr *fg = data;
+
+	if (!fg)
+		return FALSE;
+
+	_status_update_app_info_list(fg->pid, STATUS_BG, TRUE);
+
+	_fgmgr_list = g_list_remove(_fgmgr_list, fg);
+	free(fg);
 
 	return FALSE;
 }
 
-static bool __check_ug_client_process_pool(const char *app_path)
+static void __add_fgmgr_list(int pid)
 {
-	char sympath[MAX_PACKAGE_APP_PATH_SIZE] = {0,};
-	int ret;
-	bool func_ret = true;
+	struct fgmgr *fg;
 
-	if(!app_path) {
-		_E("invalid input param");
-		func_ret = false;
+	fg = calloc(1, sizeof(struct fgmgr));
+	if (!fg)
+		return;
+
+	fg->pid = pid;
+	fg->tid = g_timeout_add(5000, __fg_timeout_handler, fg);
+
+	_fgmgr_list = g_list_append(_fgmgr_list, fg);
+}
+
+static void __del_fgmgr_list(int pid)
+{
+	GList *iter = NULL;
+	struct fgmgr *fg;
+
+	if (pid < 0)
+		return;
+
+	for (iter = _fgmgr_list; iter != NULL; iter = g_list_next(iter)) {
+		fg = (struct fgmgr *)iter->data;
+		if (fg->pid == pid) {
+			g_source_remove(fg->tid);
+			_fgmgr_list = g_list_remove(_fgmgr_list, fg);
+			free(fg);
+			return;
+		}
+	}
+}
+
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+static int __tep_mount(char *mnt_path[])
+{
+	DBusMessage *msg;
+	int func_ret = 0;
+	int rv = 0;
+	struct stat link_buf = {0,};
+
+	rv = lstat(mnt_path[0], &link_buf);
+	if (rv == 0) {
+		rv = unlink(mnt_path[0]);
+		if (rv)
+			_E("Unable tp remove link file %s", mnt_path[0]);
+	}
+
+	msg = dbus_message_new_method_call(TEP_BUS_NAME, TEP_OBJECT_PATH,
+	                                   TEP_INTERFACE_NAME, TEP_MOUNT_METHOD);
+	if (!msg) {
+		_E("dbus_message_new_method_call(%s:%s-%s)", TEP_OBJECT_PATH,
+		   TEP_INTERFACE_NAME, TEP_MOUNT_METHOD);
+		return -1;
+	}
+
+	if (!dbus_message_append_args(msg,
+	                              DBUS_TYPE_STRING, &mnt_path[0],
+	                              DBUS_TYPE_STRING, &mnt_path[1],
+	                              DBUS_TYPE_INVALID)) {
+		_E("Ran out of memory while constructing args\n");
+		func_ret = -1;
 		goto func_out;
 	}
 
-	if(strncmp(app_path, "/usr/ug/bin/", strlen("/usr/ug/bin")) != 0) {
-		func_ret = false;
+	if (dbus_connection_send(conn, msg, NULL) == FALSE) {
+		_E("dbus_connection_send error");
+		func_ret = -1;
 		goto func_out;
 	}
-
-	if(readlink(app_path, sympath, MAX_PACKAGE_APP_PATH_SIZE-1) == -1) {
-		_E("read app path link error(%d)", errno);
-		func_ret = false;
-		goto func_out;
-	}
-
-	if(strncmp(sympath, "/usr/bin/ug-client", strlen("/usr/bin/ug-client")) != 0) {
-		func_ret = false;
-	}
-
 func_out :
-	_D("ug process pool check result : %d", func_ret);
+	dbus_message_unref(msg);
 	return func_ret;
 }
 
-#ifdef _APPFW_FEATURE_MULTI_WINDOW
-static void __add_multi_window_info(bundle* kb, const struct appinfo *ai, const char* callee_appid, const char* caller_appid)
+static void __send_mount_request(const struct appinfo *ai, const char *tep_name,
+                                 bundle *kb)
 {
-	const struct appinfo *caller_ai;
-	const struct appinfo *callee_ai;
-	unsigned int layout = -1; // 0 : top of split window / 1 : bottom of split window
-	const char *caller = NULL;
-	Ecore_X_Window caller_win_id = 0;
-	const char *bundle_layout = NULL;
-	int is_open_via_multi = 0;
-	int startup_type = 2; //2 means callee will be displayed as split view
-	const char *caller_ai_multi_window = NULL;
-	const char *callee_ai_multi_window = NULL;
-	int ret = 0;
-	int multiwindow_enabled = 0;
+	SECURE_LOGD("tep name is: %s", tep_name);
+	char *mnt_path[2] = {NULL, };
+	const char *installed_storage = NULL;
+	char tep_path[PATH_MAX] = {0, };
 
-	/* check multi window is enabled or not */
-	ret = vconf_get_bool(VCONFKEY_QUICKSETTING_MULTIWINDOW_ENABLED, &multiwindow_enabled);
-	if((ret != VCONF_OK) || (multiwindow_enabled == 0)) {
-		_D("multiwindow is disabled");
-		return;
-	}
-
-	SECURE_LOGD("callee appid : %s / caller_appid : %s", callee_appid, caller_appid);
-
-	/* check whether caller & callee ui app support multi window or not */
-	caller_ai = appinfo_find(_laf, caller_appid);
-	if(caller_ai == NULL) {
-		_D("no caller appinfo");
-		return;
-	}
-	caller_ai_multi_window = appinfo_get_value(caller_ai, AIT_MULTI_WINDOW);
-	if((caller_ai_multi_window == NULL) || (strcmp(caller_ai_multi_window, "true") != 0)) {
-		_D("caller app does not support multi window");
-		return;
-	}
-	callee_ai = appinfo_find(_laf, callee_appid);
-	if(callee_ai == NULL) {
-		_D("no callee appinfo");
-		return;
-	}
-	callee_ai_multi_window = appinfo_get_value(callee_ai, AIT_MULTI_WINDOW);
-	if((callee_ai_multi_window == NULL) || (strcmp(callee_ai_multi_window, "true") != 0)) {
-		_D("callee app does not support multi window");
-		return;
-	}
-
-	/* check aul_forwad_app case */
-	if((caller_appid) && (strcmp(caller_appid, "org.tizen.app-selector") == 0)) {
-		_D("forward app case");
-		return;
-	}
-
-	/* get multi window layout value */
-	caller = bundle_get_val(kb, "__APP_SVC_K_WIN_ID__");
-	if(caller) {
-		caller_win_id = atoi(caller);
-	} else {
-		_D("caller win id is null");
-		return;
-	}
-	if(caller_win_id == 0) {
-		_D("caller id is 0");
-		return;
-	}
-
-	if( ecore_x_window_prop_card32_get(caller_win_id,
-		ECORE_X_ATOM_E_WINDOW_DESKTOP_LAYOUT, &layout, 1 ) != -1 )
-	{
-		if(layout == 0 || layout == 1) {
-			_D("layout : %d", layout);
-		} else {
-			_W("x_window__prop_get layout value error : %d", layout);
-			return;
-		}
-	} else {
-		layout = -1;
-	}
-
-	do {
-		const char *operation = NULL;
-		operation = bundle_get_val(kb, "__APP_SVC_OP_TYPE__");
-		if(operation == NULL) {
-			_D("operation is null");
-			break;
+	const char *pkgid = appinfo_get_value(ai, AIT_PKGID);
+	installed_storage = appinfo_get_value(ai, AIT_STORAGE_TYPE);
+	if (installed_storage != NULL) {
+		SECURE_LOGD("storage: %s", installed_storage);
+		if (strncmp(installed_storage, "internal", 8) == 0) {
+			snprintf(tep_path, PATH_MAX, "%s%s/res/%s", appfw_env_get_apps_path(), pkgid,
+			         tep_name);
+			mnt_path[1] = strdup(tep_path);
+			snprintf(tep_path, PATH_MAX, "%s%s/res/tep", appfw_env_get_apps_path(), pkgid);
+			mnt_path[0] = strdup(tep_path);
+		} else if (strncmp(installed_storage, "external", 8) == 0) {
+			snprintf(tep_path, PATH_MAX, "%step/%s", appfw_env_get_external_storage_path(),
+			         tep_name);
+			mnt_path[1] = strdup(tep_path);
+			snprintf(tep_path, PATH_MAX, "%step/tep-access",
+			         appfw_env_get_external_storage_path()); /* TODO : keeping tep/tep-access for now for external storage */
+			mnt_path[0] = strdup(tep_path);
 		}
 
-		if(strcmp(operation,"http://tizen.org/appcontrol/operation/view") == 0) {
-			int open_via_multi = 0;
-			ret = vconf_get_bool(VCONFKEY_SETAPPL_OPEN_VIA_MULTI, &open_via_multi);
-			_D("open_via_multi : %d", open_via_multi);
-			if((ret == VCONF_OK) && (open_via_multi == 1)) {
-				is_open_via_multi = 1;
-				/* callee window should not be transient for caller window under "open in multi window" mode */
-				if(caller) {
-					if(bundle_del(kb, "__APP_SVC_K_WIN_ID__") == -1) {
-						_D("failed to remove window id of bundle (errno : %d)", errno);
-					}
-				}
-				break;
+		if (mnt_path[0] && mnt_path[1]) {
+			bundle_add(kb, AUL_TEP_PATH, mnt_path[0]);
+			int ret = -1;
+			ret = aul_is_tep_mount_dbus_done(mnt_path[0]);
+			if (ret != 1) {
+				ret = __tep_mount(mnt_path);
+				if (ret < 0)
+					_E("dbus error %d", ret);
 			}
 		}
-	} while (0);
+		if (mnt_path[0])
+			free(mnt_path[0]);
+		if (mnt_path[1])
+			free(mnt_path[1]);
+	}
+}
+#endif
 
-	if(is_open_via_multi) {
-		if(layout == 1)
-			layout = 0;
-		else
-			layout = 1;
+static int __check_app_control_privilege(const char *operation, int caller_pid, const struct appinfo *caller)
+{
+	int ret;
+	const char *api_ver;
 
-		_D("open via multi scenario. reverted layout id is %d", layout);
-	} else {
-		/* multi window support app need be launched with full view
-		when app is launched from multi window support app with full view. */
-		if(layout == -1) {
-			startup_type = 0;
+	if (caller == NULL) // daemon
+		return 0;
+
+	if (operation == NULL || caller_pid < 1)
+		return 0;
+
+	if (strcmp(operation, AUL_SVC_OPERATION_DOWNLOAD) == 0) {
+		api_ver = appinfo_get_value(caller, AIT_API_VER);
+
+		if (!api_ver) {
+			_E("failed to get api version");
+			return -1;
+		}
+
+		if (api_ver && strverscmp("2.4", api_ver) < 1) { // ver 2.4 or later
+			ret = security_server_check_privilege_by_pid(caller_pid, "privilege::tizen::download", "rw");
+			if (ret != SECURITY_SERVER_API_SUCCESS) {
+				_E("caller %d violates http://tizen.org/privilege/download privilege (%d)", caller_pid, ret);
+				return -EILLEGALACCESS;
+			}
+		}
+	} else if (strcmp(operation, AUL_SVC_OPERATION_CALL) == 0) {
+		// Check the privilege for call operation
+		ret = security_server_check_privilege_by_pid(caller_pid, "privilege::tizen::call", "rw");
+		if (ret != SECURITY_SERVER_API_SUCCESS) {
+			_E("caller %d violates http://tizen.org/privilege/call privilege (%d)", caller_pid, ret);
+			return -EILLEGALACCESS;
 		}
 	}
 
-	char tmp_layout[128];
-	char tmp_startup[128];
-
-	snprintf(tmp_layout, 128, "%d", layout);
-	snprintf(tmp_startup, 128, "%d", startup_type);
-
-	if(bundle_add(kb, "window_layout_id", tmp_layout) != 0) {
-		_W("winow layout id bundle add error");
-	}
-	if(bundle_add(kb, "window_startup_type", tmp_startup) != 0) {
-		_W("winow startup type bundle add error");
-	}
-
-	SECURE_LOGD("window startup type(%d) and layout id(%d) is added", startup_type, layout);
-
-	return;
+	return 0;
 }
-#endif
+
 
 int __check_mode(const struct appinfo *ai)
 {
@@ -1392,33 +1634,517 @@ int __check_mode(const struct appinfo *ai)
 #endif
 #ifdef _APPFW_FEATURE_ULTRA_POWER_SAVING_MODE
 	int ups_mode = 0;
-	const char *ups_support = NULL;
 #endif
 
 #ifdef _APPFW_FEATURE_TTS_MODE
 	vconf_get_bool(VCONFKEY_SETAPPL_ACCESSIBILITY_TTS, &tts_mode);
 	if(tts_mode) {
 		tts_support = appinfo_get_value(ai, AIT_TTS);
-		_D("tts : %d %s", tts_mode, tts_support);
-		if(tts_support && strncmp(tts_support, "false", 5) == 0)
+		_W("tts : %d %s", tts_mode, tts_support);
+		if(strncmp(tts_support, "false", 5) == 0) {
+			_W("Cannot launch this app in TTS mode");
 			return -1;
+		}
 	}
 #endif
 
 #ifdef _APPFW_FEATURE_ULTRA_POWER_SAVING_MODE
 	vconf_get_int(VCONFKEY_SETAPPL_PSMODE, &ups_mode);
-	if(ups_mode == SETTING_PSMODE_WEARABLE) {
-		ups_support = appinfo_get_value(ai, AIT_UPS);
-		_D("ups : %d %s", ups_mode, ups_support);
-		if(ups_support && strncmp(ups_support, "false", 5) == 0)
-			return -1;
+	if (ups_mode == SETTING_PSMODE_EMERGENCY) {
+		const char *ups_support = appinfo_get_value(ai, AIT_UPS);
+		_W("ups : %d %s", ups_mode, ups_support);
 	}
-#endif
+#endif //_APPFW_FEATURE_ULTRA_POWER_SAVING_MODE
 
 	return 0;
 }
 
-int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_uid, int fd)
+static void __prepare_to_suspend_services(int pid)
+{
+	int dummy;
+	SECURE_LOGD("[__SUSPEND__] pid: %d", pid);
+	__app_send_raw_with_noreply(pid, APP_SUSPEND, (unsigned char *)&dummy, sizeof(int));
+}
+
+static void __prepare_to_wake_services(int pid)
+{
+	int dummy;
+	SECURE_LOGD("[__SUSPEND__] pid: %d", pid);
+	__app_send_raw_with_noreply(pid, APP_WAKE, (unsigned char *)&dummy, sizeof(int));
+}
+
+static gboolean __check_service_only(gpointer user_data)
+{
+	int pid = GPOINTER_TO_INT(user_data);
+	SECURE_LOGD("[__SUSPEND__] pid :%d", pid);
+
+	_status_check_service_only(pid, __prepare_to_suspend_services);
+
+	return FALSE;
+}
+
+#ifdef _APPFW_FEATURE_PRIVATE_SERVICE
+static int __get_visibility_from_cert_svc(const char *pkgid, int *visibility)
+{
+	int ret = 0;
+	const char *cert_value = NULL;
+	pkgmgrinfo_certinfo_h certinfo = NULL;
+
+	ret = pkgmgrinfo_pkginfo_create_certinfo(&certinfo);
+	if (ret != 0) {
+		_E("pkgmgrinfo_pkginfo_create_certinfo() failed.");
+		return -1;
+	}
+
+	ret = pkgmgrinfo_pkginfo_load_certinfo(pkgid, certinfo);
+	if (ret != 0) {
+		_E("pkgmgrinfo_pkginfo_load_certinfo() failed.");
+		ret = -1;
+		goto end;
+	}
+
+	ret = pkgmgrinfo_pkginfo_get_cert_value(certinfo, PMINFO_DISTRIBUTOR_ROOT_CERT,
+						&cert_value);
+	if (ret != 0 || cert_value == NULL) {
+		_E("pkgmgrinfo_pkginfo_get_cert_value() failed.");
+		ret = -1;
+		goto end;
+	}
+
+	ret = cert_svc_get_visibility_by_root_certificate(cert_value,
+		strlen(cert_value), visibility);
+	if (ret != 0) {
+		_E("cert_svc_get_visibility_by_root_cert() failed. err = [%d]", ret);
+		ret = -1;
+		goto end;
+	}
+	_D("visibility = [%d]", *visibility);
+
+end:
+	pkgmgrinfo_pkginfo_destroy_certinfo(certinfo);
+	return ret;
+}
+#endif
+
+static int __can_share(const char *path, const char *pkgid)
+{
+	struct stat path_stat;
+
+	if (access(path, F_OK) != 0)
+		return -1;
+
+	if (stat(path, &path_stat) != 0)
+		return -1;
+
+	if (!S_ISREG(path_stat.st_mode))
+		return -1;
+
+	char buf[1024];
+
+	snprintf(buf, sizeof(buf) - 1, "/opt/usr/apps/%s/data/", pkgid);
+	if (strncmp(path, buf, strlen(buf)) != 0)
+		return -1;
+
+	return 0;
+}
+
+static int __get_current_security_attribute(int pid, char *buf, int size)
+{
+	int fd;
+	int ret;
+	char path[1024] = { 0, };
+
+	snprintf(path, sizeof(path) - 1, "/proc/%d/attr/current", pid);
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return -1;
+
+	ret = read(fd, buf, size - 1);
+	if (ret <= 0) {
+		close(fd);
+		return -1;
+	} else
+		buf[ret] = 0;
+
+	close(fd);
+
+	return 0;
+}
+
+static int __get_exec_label_by_pid(int pid, char** exec_label)
+{
+	const char *appid = NULL;
+	const char *exec = NULL;
+	const char *type = NULL;
+	const struct appinfo *ai = NULL;
+	char attr[1024] = { 0, };
+
+	if (__get_current_security_attribute(pid, attr, sizeof(attr)) == 0) {
+		*exec_label = strdup(attr);
+		return 0;
+	}
+
+	appid = _status_app_get_appid_bypid(pid);
+	if (appid) {
+		ai = appinfo_find(_laf, appid);
+		exec = appinfo_get_value(ai, AIT_EXEC);
+		type = appinfo_get_value(ai, AIT_TYPE);
+
+		if (exec && type) {
+			if (strcmp("wgt", type) == 0) {
+				if (smack_lgetlabel(exec, exec_label, SMACK_LABEL_EXEC) == 0)
+					return 0;
+			} else {
+				if (smack_getlabel(exec, exec_label, SMACK_LABEL_EXEC) == 0)
+					return 0;
+			}
+		}
+	}
+
+	return -1;
+}
+
+static int __get_exec_label_by_appid(const char *appid, char** exec_label)
+{
+	const char *exec = NULL;
+	const char *type = NULL;
+	const struct appinfo *ai = NULL;
+
+	if (appid) {
+		ai = appinfo_find(_laf, appid);
+		exec = appinfo_get_value(ai, AIT_EXEC);
+		type = appinfo_get_value(ai, AIT_TYPE);
+
+		if (exec && type) {
+			if (strcmp("wgt", type) == 0) {
+				if (smack_lgetlabel(exec, exec_label, SMACK_LABEL_EXEC) == 0)
+					return 0;
+			} else {
+				if (smack_getlabel(exec, exec_label, SMACK_LABEL_EXEC) == 0)
+					return 0;
+			}
+		}
+	}
+
+	return -1;
+}
+
+static int __get_owner_pid(int caller_pid, bundle *kb)
+{
+	char *org_caller = NULL;
+
+	if (bundle_get_str(kb, AUL_K_ORG_CALLER_PID, &org_caller) == BUNDLE_ERROR_NONE) {
+		int org_caller_pid = atoi(org_caller);
+		char *c_exec_label = NULL;
+
+		if (__get_exec_label_by_pid(caller_pid, &c_exec_label) == 0) {
+
+			if (c_exec_label &&
+				(strcmp(APP_SELECTOR, c_exec_label) == 0 ||
+				strcmp(SHARE_PANEL, c_exec_label) == 0))
+					caller_pid = org_caller_pid;
+		}
+
+		if (c_exec_label)
+			free(c_exec_label);
+	}
+
+	return caller_pid;
+}
+
+static int __get_exec_label(char **caller_exec_label, char **callee_exec_label,
+				int caller_pid, const char *appid)
+{
+	char *label_caller = NULL;
+	char *label = NULL;
+
+	if (__get_exec_label_by_pid(caller_pid, &label_caller) != 0) {
+		return -1;
+	}
+
+	if (__get_exec_label_by_appid(appid, &label) != 0) {
+		free(label_caller);
+		return -1;
+	}
+
+	*caller_exec_label = label_caller;
+	*callee_exec_label = label;
+	return 0;
+}
+
+static int __grant_temporary_permission(int caller_pid, const char *appid, bundle *kb,
+					char **out_caller_exec_label, char **out_callee_exec_label,
+					char ***out_paths)
+{
+	int type = bundle_get_type(kb, AUL_SVC_DATA_PATH);
+	char *path = NULL;
+	const char **path_array = NULL;
+	int len;
+	char *caller_exec_label = NULL;
+	char *callee_exec_label = NULL;
+	int i;
+	char **paths = NULL;
+	int ret = -1;
+	int owner_pid = -1;
+	const char *tmp_appid = NULL;
+	const char *pkgid = NULL;
+	const struct appinfo *ai = NULL;
+
+	switch (type) {
+		case BUNDLE_TYPE_STR:
+			bundle_get_str(kb, AUL_SVC_DATA_PATH, &path);
+
+			if (!path) {
+				_E("path was null");
+				goto check_uri;
+			}
+
+			owner_pid = __get_owner_pid(caller_pid, kb);
+			owner_pid = getpgid(owner_pid); /* for webapp */
+			tmp_appid = _status_app_get_appid_bypid(owner_pid);
+
+			ai = appinfo_find(_laf, tmp_appid);
+			pkgid = appinfo_get_value(ai, AIT_PKGID);
+
+			if (__can_share(path, pkgid) != 0) {
+				_E("__can_share() returned an error");
+				goto check_uri;
+			}
+
+			if (__get_exec_label(&caller_exec_label, &callee_exec_label, owner_pid,
+				appid) != 0) {
+				_E("__get_exec_label() returned an error");
+				goto finally;
+			}
+
+			paths = (char**)malloc(sizeof(char*) * 3);
+			if (!paths) {
+				_E("Out of memory");
+				goto finally;
+			}
+
+			paths[0] = strdup(path);
+			paths[1] = NULL;
+			paths[2] = NULL;
+			ret = 0;
+			break;
+
+		case BUNDLE_TYPE_STR_ARRAY:
+			path_array = bundle_get_str_array(kb, AUL_SVC_DATA_PATH, &len);
+			if (!path_array || len <= 0) {
+				_E("path_array was null");
+				goto check_uri;
+			}
+
+			owner_pid = __get_owner_pid(caller_pid, kb);
+			owner_pid = getpgid(owner_pid); /* for webapp */
+			tmp_appid = _status_app_get_appid_bypid(owner_pid);
+			ai = appinfo_find(_laf, tmp_appid);
+			pkgid = appinfo_get_value(ai, AIT_PKGID);
+
+			if (__get_exec_label(&caller_exec_label, &callee_exec_label, owner_pid,
+				appid) != 0) {
+				_E("__get_exec_label() returned an error");
+				goto finally;
+			}
+
+			paths = (char**)malloc(sizeof(char*) * (len + 2));
+			if (!paths) {
+				_E("Out of memory");
+				goto finally;
+			}
+
+			int cnt = 0;
+			for (i = 0; i < len; i++) {
+				if (__can_share(path_array[i], pkgid) == 0) {
+					paths[cnt++] = strdup(path_array[i]);
+				}
+			}
+			if (cnt > 0){
+				paths[cnt] = NULL;
+				paths[cnt + 1] = NULL;
+				ret = 0;
+			} else {
+				free(paths);
+				paths = NULL;
+			}
+			break;
+	}
+
+check_uri:
+	if (bundle_get_str(kb, AUL_SVC_K_URI, &path) == BUNDLE_ERROR_NONE) {
+		if (!path) {
+			_E("path was null");
+			goto finally;
+		}
+
+		if (strncmp(path, "file://", 7) == 0)
+			path = &path[7];
+		else {
+			_E("file wasn't started with file://");
+			goto finally;
+		}
+
+		if (owner_pid == -1) {
+			owner_pid = __get_owner_pid(caller_pid, kb);
+			owner_pid = getpgid(owner_pid); /* for webapp */
+		}
+
+		tmp_appid = _status_app_get_appid_bypid(owner_pid);
+		ai = appinfo_find(_laf, tmp_appid);
+		pkgid = appinfo_get_value(ai, AIT_PKGID);
+
+		if (__can_share(path, pkgid) != 0) {
+			_E("__can_share() returned an error");
+			goto finally;
+		}
+
+		if (!caller_exec_label && !callee_exec_label)
+			if (__get_exec_label(&caller_exec_label, &callee_exec_label, owner_pid,
+				appid) != 0) {
+				_E("__get_exec_label() returned an error");
+				goto finally;
+			}
+
+		if (!paths) {
+			paths = (char**)malloc(sizeof(char*) * 2);
+			if (!paths) {
+				_E("Out of memory");
+				goto finally;
+			}
+
+			paths[0] = strdup(path);
+			paths[1] = NULL;
+		} else {
+			i = 0;
+			while (1) {
+				if (paths[i] == NULL) {
+					paths[i] = strdup(path);
+					break;
+				}
+				i++;
+			}
+		}
+		ret = 0;
+	}
+finally:
+	if (ret == 0 && caller_exec_label && paths) {
+		_D("grant permission %s : %s : %s", paths[0], caller_exec_label,
+			callee_exec_label);
+		int r = security_server_perm_apply_sharing(NULL, (const char**)paths, caller_exec_label, callee_exec_label);
+		if (r != SECURITY_SERVER_API_SUCCESS) {
+			_E("security_server_perm_apply_sharing() returned an error %d",r);
+			ret = -1;
+		} else {
+			*out_caller_exec_label = caller_exec_label;
+			*out_callee_exec_label = callee_exec_label;
+			*out_paths = paths;
+
+			caller_exec_label = NULL;
+			callee_exec_label = NULL;
+			paths = NULL;
+		}
+	}
+
+	if (caller_exec_label)
+		free(caller_exec_label);
+	if (callee_exec_label)
+		free(callee_exec_label);
+	if (paths) {
+		i = 0;
+		while (1) {
+			if (paths[i] == NULL) {
+				free(paths);
+				break;
+			}
+			free(paths[i]);
+			i++;
+		}
+	}
+	return ret;
+}
+
+static void __add_shared_info(int pid, const char *caller_exec_label, const char *callee_exec_label, char **paths)
+{
+	_status_set_exec_label(pid, callee_exec_label);
+	_status_add_shared_info(pid, caller_exec_label, paths);
+}
+
+#ifdef _APPFW_FEATURE_TERMINATE_UNMANAGEABLE_APP
+#ifdef _APPFW_FEATURE_SEND_HOME_LAUNCH_SIGNAL
+static void __check_home_app(int pid)
+{
+	const char *home_app = _get_home_appid();
+	const char *appid = NULL;
+
+	if (home_app == NULL)
+		return;
+
+	appid = _status_app_get_appid_bypid(pid);
+
+	if (appid && strcmp(appid, home_app) == 0) {
+		int cnt = 0;
+		int *pids = NULL;
+		int i;
+		const char *taskmanage = NULL;
+		const struct appinfo *ai = NULL;
+		const char* bg = NULL;
+
+		app_group_get_leader_pids(&cnt, &pids);
+		if (pids) {
+			for (i = 0; i < cnt; ++i) {
+				appid = _status_app_get_appid_bypid(pids[i]);
+				if (appid == NULL || strcmp(appid, home_app) == 0)
+					continue;
+
+				ai = appinfo_find(_laf, appid);
+				taskmanage = appinfo_get_value(ai, AIT_TASKMANAGE);
+				bg = appinfo_get_value(ai, AIT_ALLOWED_BG);
+
+				if (taskmanage && strcmp("false", taskmanage) == 0
+					&& bg && strcmp("NONE", bg) == 0) {
+					int st = _status_get_app_info_status(pids[i]);
+					if (st != STATUS_DYING) {
+						_W("terminate %d %s %d", pids[i], appid, st);
+						aul_update_freezer_status(pids[i], "wakeup");
+						_term_sub_app(pids[i]);
+					}
+				}
+			}
+
+			free(pids);
+		}
+	}
+}
+#endif
+#endif
+
+int _revoke_temporary_permission(int pid)
+{
+	GList *list = _status_get_shared_info_list(pid);
+	const char *callee_label = _status_get_exec_label(pid);
+
+	if (!list || !callee_label) {
+		_E("list or callee_label was null");
+		return -1;
+	}
+
+	while (list) {
+		shared_info_t *sit = (shared_info_t*)list->data;
+
+		_D("revoke permission %s : %s", sit->owner_exec_label, callee_label);
+		int r = security_server_perm_drop_sharing(NULL, (const char**)sit->paths,
+				sit->owner_exec_label, callee_label);
+
+		if (r != SECURITY_SERVER_API_SUCCESS)
+			_E("revoke error %d",r);
+
+		list = g_list_next(list);
+	}
+	return _status_clear_shared_info_list(pid);
+}
+
+int _start_app(const char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_uid, int fd)
 {
 	const struct appinfo *ai;
 	const struct appinfo *caller_ai;
@@ -1434,29 +2160,50 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 	const char *preload;
 	const char *pkg_status;
 	const char *operation;
-	const char *fake_effect;
-	char caller_appid[256];
+	char caller_appid[256] = {0,};
 	char* caller = NULL;
-	char* curr_caller = NULL;
 	char* old_caller = NULL;
 	pkgmgrinfo_cert_compare_result_type_e compare_result;
 	int delay_reply = 0;
-	int pad_pid = LAUNCHPAD_PID;
+	int pad_pid = NO_LAUNCHPAD_PID;
 	int status = -1;
 	int r = -1;
 	char trm_buf[MAX_PACKAGE_STR_SIZE];
+	gboolean is_group_app = FALSE;
+#ifdef _APPFW_FEATURE_AMD_MODULE_LOG
+	char log_status[AUL_PR_NAME] = {0,};
+#endif
 
+#ifdef _APPFW_FEATURE_FAKE_EFFECT
+	const char *fake_effect;
 	int effect_mode = 0;
 #ifdef _APPFW_FEATURE_WMS_CONNECTION_CHECK
 	int wmanager_connected = 0;
 #endif
-	char *caller_component_type = NULL;
 
+#endif /* _APPFW_FEATURE_FAKE_EFFECT */
+
+#ifdef _APPFW_FEATURE_AMD_KEY
+	const char *caller_component_type = NULL;
+#endif
+	int prelaunch_attribute = 0;
+
+	bool bg_allowed = false;
+	int lpid;
+	gboolean can_attach;
+	app_group_launch_mode launch_mode;
+	char *caller_exec_label = NULL;
+	char *callee_exec_label = NULL;
+	char **paths = NULL;
+	int grant_permission = 0;
+
+	traceBegin(TTRACE_TAG_APPLICATION_MANAGER, "AUL:AMD:START_APP");
 	if (appid == NULL || kb == NULL
 		|| caller_pid < 0 || fd < 0) {
 		_D("invalid parameter");
 		if (fd >= 0)
 			__real_send(fd, -1);
+		traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 		return -1;
 	}
 
@@ -1471,36 +2218,36 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 		ret = aul_app_get_appid_bypid(caller_pid, caller_appid, sizeof(caller_appid));
 		if(ret == 0) {
 			bundle_add(kb, AUL_K_CALLER_APPID, caller_appid);
+			caller = caller_appid;
+		} else {
+			_E("no caller appid info, ret: %d", ret);
 		}
 	} else {
 		bundle_add(kb, AUL_K_CALLER_APPID, caller);
 	}
-	curr_caller = bundle_get_val(kb,AUL_K_CALLER_APPID);
-	SECURE_LOGD("caller : %s", curr_caller);
 
-#ifdef _APPFW_FEATURE_CONTACT_PHONE_AS_ONE_APP
-	// Add the appid into bundle to distinguish between Contacts and Phone.
-	if (strncmp(appid, "org.tizen.contacts", strlen("org.tizen.contacts")) == 0
-		|| strncmp(appid, "org.tizen.phone", strlen("org.tizen.phone")) == 0)
-	{
-		bundle_add(kb, AUL_K_INTERNAL_APPID, appid);
-		SECURE_LOGD("Add the appid[%s] into bundle to distinguish between Contacts and Phone.", appid);
-	}
-#endif
+	if (caller)
+		SECURE_LOGW("caller appid : %s", caller);
+
+	_W("caller pid : %d", caller_pid);
+
 	ai = appinfo_find(_laf, appid);
 	if(ai == NULL) {
-		_D("no appinfo");
-		__real_send(fd, -1);
+		_E("no appinfo");
+		__real_send(fd, -ENOAPP);
+		traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 		return -1;
 	} else {
 		pkg_status = appinfo_get_value(ai, AIT_STATUS);
 		if(pkg_status && (strncmp(pkg_status, "blocking", 8) == 0 || strncmp(pkg_status, "restart", 7) == 0) ) {
 			_D("blocking");
 			__real_send(fd, -EREJECTED);
+			traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 			return -EREJECTED;
 		} else if(pkg_status && strncmp(pkg_status, "unmounted", 9) == 0 ) {
 			_D("unmounted");
 			__real_send(fd, -1);
+			traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 			return -1;
 		}
 	}
@@ -1511,8 +2258,22 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 	pkgid = appinfo_get_value(ai, AIT_PKGID);
 	component_type = appinfo_get_value(ai, AIT_COMPTYPE);
 
+	if (pkg_type == NULL)
+		pkg_type = "unknown";
+
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+	const char *tep_name = NULL;
+
+	tep_name = appinfo_get_value(ai, AIT_TEP);
+	if (tep_name != NULL) {
+		__send_mount_request(ai, tep_name, kb);
+	}
+#endif
 	operation = bundle_get_val(kb, "__APP_SVC_OP_TYPE__");
-	caller_ai = appinfo_find(_laf, curr_caller);
+	caller_ai = appinfo_find(_laf, caller);
+#ifdef _APPFW_FEATURE_AMD_KEY
+	caller_component_type = appinfo_get_value(caller_ai, AIT_COMPTYPE);
+#endif
 
 	if(permission && strncmp(permission, "signature", 9) == 0 ) {
 		if(caller_uid != 0 && (cmd == APP_START
@@ -1525,16 +2286,39 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 		{
 			preload = appinfo_get_value(caller_ai, AIT_PRELOAD);
 			if( preload && strncmp(preload, "true", 4) != 0 ) {
-				pkgmgrinfo_pkginfo_compare_app_cert_info(caller_appid, appid, &compare_result);
+				ret = pkgmgrinfo_pkginfo_compare_app_cert_info(caller, appid, &compare_result);
+				if (ret != PMINFO_R_OK) {
+					pid = -1;
+					_E("compare app cert info failed : %d", ret);
+					if(cmd == APP_START_ASYNC)
+						close(fd);
+					else
+						__real_send(fd, pid);
+					traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
+					return pid;
+				}
 				if(compare_result != PMINFO_CERT_COMPARE_MATCH) {
 					pid = -EILLEGALACCESS;
 					if(cmd == APP_START_ASYNC)
 						close(fd);
 					else
 						__real_send(fd, pid);
+					traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 					return pid;
 				}
 			}
+		}
+	}
+
+	if(operation && caller_ai) {
+		ret = __check_app_control_privilege(operation, caller_pid, caller_ai);
+		if (ret < 0) {
+			if (cmd == APP_START_ASYNC)
+				close(fd);
+			else
+				__real_send(fd, ret);
+			traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
+			return ret;
 		}
 	}
 
@@ -1544,30 +2328,81 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 			close(fd);
 		else
 			__real_send(fd, pid);
+		traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 		return pid;
 	}
 
-	pkgmgrinfo_client_request_enable_external_pkg(pkgid);
+	pkgmgrinfo_client_request_enable_external_pkg((char *)pkgid);
 
-	if (component_type && (strncmp(component_type, "uiapp", strlen("uiapp")) == 0
-		|| strncmp(component_type, "watchapp", strlen("watchapp")) == 0
-		|| strncmp(component_type, "widgetapp", strlen("widgetapp")) == 0)) {
+	if (component_type && (strncmp(component_type, APP_TYPE_UI, strlen(APP_TYPE_UI)) == 0
+		|| strncmp(component_type, APP_TYPE_WATCH, strlen(APP_TYPE_WATCH)) == 0
+		|| strncmp(component_type, APP_TYPE_WIDGET, strlen(APP_TYPE_WIDGET)) == 0 )) {
+		gboolean new_process = FALSE;
 
-#ifdef _APPFW_FEATURE_MULTI_WINDOW
-		if((cmd != APP_RESUME) && (cmd != APP_OPEN)) {
-			__add_multi_window_info(kb, ai, (const char*) appid, (const char*)bundle_get_val(kb,AUL_K_CALLER_APPID));
-		}
-#endif
 		multiple = appinfo_get_value(ai, AIT_MULTI);
 		if (!multiple || strncmp(multiple, "false", 5) == 0) {
 			pid = _status_app_is_running_v2(appid);
 		} else if (operation != NULL && strncmp(operation, "http://tizen.org/appcontrol/operation/view", 512) == 0){
 			old_caller = _status_get_caller_by_appid(appid);
-			if(old_caller && curr_caller) {
-				if(strncmp(old_caller, curr_caller, MAX_PACKAGE_STR_SIZE) == 0) {
+			if(old_caller && caller) {
+				if(strncmp(old_caller, caller, MAX_PACKAGE_STR_SIZE) == 0) {
 					pid = _status_app_is_running_v2(appid);
 				}
 			}
+		}
+
+		if (strncmp(component_type, APP_TYPE_UI, strlen(APP_TYPE_UI)) == 0) {
+			if (app_group_is_group_app(kb)) {
+				pid = -1;
+				is_group_app = TRUE;
+			}
+
+			int st = -1;
+
+			if (pid > 0)
+				st = _status_get_app_info_status(pid);
+
+			if (pid == -1 || st == STATUS_DYING) {
+				int found_pid = -1;
+				int found_lpid = -1;
+
+				if (app_group_find_singleton(appid, &found_pid, &found_lpid) == 0) {
+					pid = found_pid;
+					new_process = FALSE;
+				} else {
+					new_process = TRUE;
+				}
+
+				if (app_group_can_start_app(appid, kb, &can_attach, &lpid, &launch_mode) != 0 ) {
+					_E("can't make group info");
+					pid = -EILLEGALACCESS;
+					if (cmd == APP_START_ASYNC)
+						close(fd);
+					else
+						__real_send(fd, pid);
+					traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
+					return pid;
+				}
+
+				if (can_attach && lpid == found_lpid) {
+					_E("can't launch singleton app in the same group");
+					pid = -EILLEGALACCESS;
+					if (cmd == APP_START_ASYNC)
+						close(fd);
+					else
+						__real_send(fd, pid);
+					traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
+					return pid;
+				}
+
+				if (found_pid != -1) {
+					_W("app_group_clear_top, pid: %d", found_pid);
+					app_group_clear_top(found_pid);
+				}
+			}
+
+			if (pid == -1 && can_attach)
+				pid = app_group_find_pid_from_recycle_bin(appid);
 		}
 
 #ifdef _APPFW_FEATURE_APP_CONTROL_LITE
@@ -1591,33 +2426,49 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 				SECURE_LOGD("app_path : %s , ug id(%s)", app_path, bundle_get_val(kb, "__AUL_UG_ID__"));
 			} else if(strncmp(caller_app_path_link, "/usr/bin/ug-client", 512) == 0) {
 				__real_send(fd, -EUGLOCAL_LAUNCH);
+				traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 				return -1;
 			}
 		}
 #endif
 
-		if(curr_caller) {
-			caller_component_type = appinfo_get_value(caller_ai, AIT_COMPTYPE);
-			if (caller_component_type && strncmp(caller_component_type, "uiapp", 5) == 0) {
+		if(caller) {
+#ifdef _APPFW_FEATURE_AMD_KEY
+			if (caller_component_type && strncmp(caller_component_type, APP_TYPE_UI, strlen(APP_TYPE_UI)) == 0) {
 				Ecore_X_Window in_win;
 				in_win = _input_window_get();
 				if(in_win) {
 					ret = ecore_x_pointer_grab(in_win);
 					_D("win(%x) ecore_x_pointer_grab(%d)", in_win, ret);
 				}
+				if(_key_grab(KEY_BACK, EXCLUSIVE_GRAB) < 0) {
+					_W("back key grab error");
+				} else {
+					_D("back key grab");
+				}
 			}
+#endif
 		}
 
+		if (__grant_temporary_permission(caller_pid, appid, kb,
+			&caller_exec_label, &callee_exec_label, &paths) == 0)
+			grant_permission = 1;
 		status = _status_get_app_info_status(pid);
 		if (pid > 0 && status != STATUS_DYING) {
 			if (caller_pid == pid) {
 				SECURE_LOGD("caller process & callee process is same.[%s:%d]", appid, pid);
 				pid = -ELOCALLAUNCH_ID;
 			} else {
-				if(pkg_type && strncmp(pkg_type, "wgt", 3) == 0) {
+				if(strncmp(pkg_type, "wgt", 3) == 0) {
 					__pre_launching_processing(appid);
 				}
-				proc_group_change_status(PROC_CGROUP_SET_RESUME_REQUEST, pid, appid);
+
+#ifdef _APPFW_FEATURE_AMD_MODULE_LOG
+			strncpy(log_status, "RESUMING", strlen("RESUMING"));
+#endif
+
+				proc_group_change_status(PROC_CGROUP_SET_RESUME_REQUEST, pid, (char *)appid);
+
 				if ((ret = __nofork_processing(cmd, pid, kb, fd)) < 0) {
 					pid = ret;
 				} else {
@@ -1630,7 +2481,26 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 				if (r == -1)
 					_D("send SIGKILL: %s", strerror(errno));
 			}
+
+#ifdef _APPFW_FEATURE_AMD_MODULE_LOG
+			strncpy(log_status, "LAUNCHING", strlen("LAUNCHING"));
+#endif
+
+			// 2.4 bg categorized ui app || watch || widget -> bg allowed (2.3 ui app -> not allowed)
+			prelaunch_attribute = __get_prelaunch_attribute(ai);
+			if ((strncmp(component_type, APP_TYPE_UI, sizeof(APP_TYPE_UI)) == 0
+				&& (prelaunch_attribute & RESOURCED_ALLOWED_BG_ATTRIBUTE))
+					|| (strncmp(component_type, APP_TYPE_WATCH, sizeof(APP_TYPE_WATCH)) == 0)
+					|| (strncmp(component_type, APP_TYPE_WIDGET, sizeof(APP_TYPE_WIDGET)) == 0)) {
+				_D("[__SUSPEND__] allowed background, appid: %s", appid);
+				bundle_add(kb, AUL_K_ALLOWED_BG, "ALLOWED_BG");
+			}
+
+			__send_proc_prelaunch_signal(appid, pkgid, prelaunch_attribute);
+
+#ifdef _APPFW_FEATURE_FAKE_EFFECT
 			fake_effect = bundle_get_val(kb, "__FAKE_EFFECT__");
+#endif
 
 #ifdef _APPFW_FEATURE_CPU_BOOST
 			if (cmd == APP_OPEN || operation != NULL ||
@@ -1646,6 +2516,8 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 				_D("%s-%s : %d", SYSTEM_INTERFACE_NAME, SYSTEM_METHOD_NAME, ret);
 			}
 #endif
+
+#ifdef _APPFW_FEATURE_FAKE_EFFECT
 			/*
 			 * 	effect_mode = 0
 			 * 		default mode : fake effect off, 1.6 MHZ off
@@ -1657,7 +2529,7 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 			 * 		1.6 MHZ mode : faek effect off, 1.6MHZ on
 			 *
 			 */
-			vconf_get_int(AMD_EFFECT_IMAGE_ENABLE, &effect_mode);
+			vconf_get_int(VCONFKEY_AMD_EFFECT_IMAGE_ENABLE, &effect_mode);
 #ifdef _APPFW_FEATURE_WMS_CONNECTION_CHECK
 			vconf_get_bool(VCONFKEY_WMS_WMANAGER_CONNECTED, &wmanager_connected);
 #endif
@@ -1672,15 +2544,14 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 #endif
 				){
 				char image_filename[256] = {0,};
-				char xml_filename[256] = {0,};
 				const char *portraitimg = NULL;
 				const char *landscapeimg = NULL;
 #ifdef _APPFW_FEATURE_CHANGEABLE_COLOR
-				char *effectimg_type = NULL;
+				const char *effectimg_type = NULL;
 #endif
 				const char *indicator = NULL;
 				int screen_mode = 0;
-				bool rotate_allowed = false;
+				int rotate_allowed = 0;
 				int file_type = 1;
 				int theme = 0;
 
@@ -1756,27 +2627,17 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 					}
 				}
 			}
+#endif /* _APPFW_FEATURE_FAKE_EFFECT */
 
 #ifdef _APPFW_FEATURE_DEBUG_LAUNCHPAD
 			if (bundle_get_type(kb, AUL_K_SDK) != BUNDLE_TYPE_NONE) {
 				pad_pid = DEBUG_LAUNCHPAD_PID;
-			} else if (pkg_type && strncmp(pkg_type, "wgt", 3) == 0) {
+			} else if (strncmp(pkg_type, "wgt", 3) == 0) {
 				pad_pid = WEB_LAUNCHPAD_PID;
 			}
 #else
-			if (pkg_type && strncmp(pkg_type, "wgt", 3) == 0) {
+			if (strncmp(pkg_type, "wgt", 3) == 0) {
 				pad_pid = WEB_LAUNCHPAD_PID;
-			}
-#endif
-#ifdef _APPFW_FEATURE_NATIVE_LAUNCHPAD
-			else if (pkg_type && strncmp(pkg_type, "tpk", 3) == 0) {
-                char native_sock[UNIX_PATH_MAX] = { 0, };
-                snprintf(native_sock, UNIX_PATH_MAX, "%s/%d", AUL_SOCK_PREFIX, pad_pid);
-				if (access(native_sock, F_OK) != 0) {
-					_D("Sending to native launchpad because native launchpad is not initialized.");
-				} else {
-				    pad_pid = NATIVE_LAUNCHPAD_PID;
-                }
 			}
 #endif
 #ifdef _APPFW_FEATURE_PROCESS_POOL
@@ -1789,85 +2650,174 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 
 				SECURE_LOGD("appid: %s", appid);
 
-				if (process_pool && strncmp(process_pool, "true", strlen("true")) == 0)
+				pad_pid = PROCESS_POOL_LAUNCHPAD_PID;
+				char pad_sock[UNIX_PATH_MAX] = { 0, };
+				snprintf(pad_sock, UNIX_PATH_MAX, "%s/%d", AUL_SOCK_PREFIX, pad_pid);
+				if (access(pad_sock, F_OK) != 0)
 				{
- #ifndef _APPFW_FEATURE_PROCESS_POOL_COMMON
-					if (hwacc && strncmp(hwacc, "USE", strlen("USE")) != 0)
-					{
-						_D("Sending to process-pool launchpad (type1).");
-						bundle_add(kb, AUL_K_LAUNCHPAD_TYPE, "1"); //sw rendering
-						pad_pid = PROCESS_POOL_LAUNCHPAD_PID;
-					}
-					else
-					{
-  #ifndef _APPFW_FEATURE_PROCESS_POOL_HW_RENDERING
-						_D("Sending to legacy launchpad because launchpad type2 is not supported.");
-  #else
-						_D("Sending to process-pool launchpad (type2).");
-						bundle_add(kb, AUL_K_LAUNCHPAD_TYPE, "2"); //hw rendering
-						pad_pid = PROCESS_POOL_LAUNCHPAD_PID;
-  #endif
-					}
- #else //_APPFW_FEATURE_PROCESS_POOL_COMMON
-					_D("Sending to process-pool launchpad (combine mode).");
-					bundle_add(kb, AUL_K_LAUNCHPAD_TYPE, "1");
-					pad_pid = PROCESS_POOL_LAUNCHPAD_PID;
- #endif //_APPFW_FEATURE_PROCESS_POOL_COMMON
-
-					char pad_sock[UNIX_PATH_MAX] = { 0, };
-					snprintf(pad_sock, UNIX_PATH_MAX, "%s/%d", AUL_SOCK_PREFIX, pad_pid);
-					if (access(pad_sock, F_OK) != 0)
-					{
-						_D("Sending to legacy launchpad because process-pool launchpad is not initialized.");
-						pad_pid = LAUNCHPAD_PID;
-					}
+					_W("Sending to legacy launchpad because process-pool launchpad is not initialized.");
+					pad_pid = NO_LAUNCHPAD_PID;
 				}
 			}
 #endif //_APPFW_FEATURE_PROCESS_POOL
-
+			_W("pad pid(%d)", pad_pid);
 			__set_appinfo_for_launchpad(ai, kb);
-			pid = app_send_cmd(pad_pid, cmd, kb);
+			if (pad_pid == NO_LAUNCHPAD_PID)
+			{
+				pid = start_process(appid, app_path, kb);
+			}
+			else
+			{
+				pid = app_send_cmd(pad_pid, cmd, kb);
+				if (pid == AUL_R_ENOLAUNCHPAD && pad_pid == PROCESS_POOL_LAUNCHPAD_PID) {
+					_W("Launch with legacy way");
+					pad_pid = NO_LAUNCHPAD_PID;
+					pid = start_process(appid, app_path, kb);
+				}
+			}
 			if(pid == AUL_R_ECOMM) {
 				pid = -ENOLAUNCHPAD;
 			}
-			//_add_cgroup(_lcg, appid, pid);
-			proc_cgroup_launch(PROC_CGROUP_SET_LAUNCH_REQUEST, pid, appid, pkgid);
+			aul_send_app_launch_request_signal(pid, appid, pkgid, component_type);
 			snprintf(trm_buf, MAX_PACKAGE_STR_SIZE, "appinfo_launch:%s[PID]%d", appid, pid);
 			__trm_app_info_send_socket(trm_buf);
 		}
 		if(pid < 0) {
+#ifdef _APPFW_FEATURE_AMD_KEY
 			if(_input_window_get() != 0)
 				ecore_x_pointer_ungrab();
 			_D("pid(%d) ecore_x_pointer_ungrab", pid);
+			if(_key_ungrab(KEY_BACK) < 0) {
+				_W("back key ungrab error");
+			} else {
+				_D("back key ungrab");
+			}
+#endif
 		} else {
-			grab_timer_id = g_timeout_add(1000, __grab_timeout_handler, pid);
+			if (new_process) {
+				_D("add app group info");
+				app_group_start_app(pid, kb, lpid, can_attach, launch_mode);
+
+				if (component_type && strncmp(component_type, APP_TYPE_UI, strlen(APP_TYPE_UI)) == 0)
+					__add_fgmgr_list(pid);
+			} else if (cmd == APP_START
+					|| cmd == APP_START_RES
+					|| cmd == APP_START_ASYNC
+#ifdef _APPFW_FEATURE_MULTI_INSTANCE
+					|| cmd == APP_START_MULTI_INSTANCE
+#endif
+				 ) {
+				app_group_restart_app(pid, kb);
+			}
+
+#ifdef _APPFW_FEATURE_AMD_KEY
+			grab_timer_id = g_timeout_add(1000, __grab_timeout_handler, (void *)pid);
+#endif
 		}
 	}
-	else if (component_type && strncmp(component_type, "svcapp", 6) == 0) {
+	else if (component_type && strncmp(component_type, APP_TYPE_SERVICE, sizeof(APP_TYPE_SERVICE)) == 0) {
+#ifdef _APPFW_FEATURE_PRIVATE_SERVICE
+		const char *caller_appid = _status_app_get_appid_bypid(caller_pid);
+
+		if (caller_appid) {
+			const struct appinfo *ai = NULL;
+			const char *caller_pkgid = NULL;
+			const char *pkgid = NULL;
+
+			ai = appinfo_find(_laf, appid);
+			pkgid = appinfo_get_value(ai, AIT_PKGID);
+			ai = appinfo_find(_laf, caller_appid);
+			caller_pkgid = appinfo_get_value(ai, AIT_PKGID);
+
+			if (caller_pkgid && pkgid && strcmp(caller_pkgid, pkgid) != 0) {
+				const char *launch_type = bundle_get_val(kb, OSP_K_LAUNCH_TYPE);
+
+				if (launch_type == NULL || strcmp(launch_type, OSP_V_LAUNCH_TYPE_DATACONTROL) != 0) {
+					const char *v = appinfo_get_value(ai, AIT_VISIBILITY);
+					char num[256] = { 0, };
+
+					if (v == NULL) {
+						int vi_num = 0;
+
+						if (__get_visibility_from_cert_svc(caller_pkgid, &vi_num) == 0) {
+							snprintf(num, 255, "%d", vi_num);
+							appinfo_set_value((struct appinfo*)ai, AIT_VISIBILITY, num);
+							v = num;
+						} else
+							_E("Failed to get visibility");
+					}
+
+					if (v) {
+						int visibility = atoi(v);
+						if (!(visibility & CERT_SVC_VISIBILITY_PLATFORM)) {
+							_E("Couldn't launch service app in other packages");
+							__real_send(fd, -EREJECTED);
+							traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
+							return -EREJECTED;
+						}
+					}
+				}
+			}
+		}
+#endif
 		pid = _status_app_is_running_v2(appid);
+
+		prelaunch_attribute = __get_prelaunch_attribute(ai);
+
+		// 2.4 bg-categorized svc app || 2.3 svc app -> bg allowed
+		if ((prelaunch_attribute & RESOURCED_ALLOWED_BG_ATTRIBUTE)
+				|| !(prelaunch_attribute & RESOURCED_API_VER_2_4_ATTRIBUTE)) {
+			_D("[__SUSPEND__] allowed backgroudn, appid: %s", appid);
+			bundle_add(kb, AUL_K_ALLOWED_BG, "ALLOWED_BG");
+			bg_allowed = true;
+		}
+
+		if (__grant_temporary_permission(caller_pid, appid, kb,
+			&caller_exec_label, &callee_exec_label, &paths) == 0)
+			grant_permission = 1;
+
 		if (pid > 0) {
+#ifdef _APPFW_FEATURE_AMD_MODULE_LOG
+			strncpy(log_status, "RESUMING", strlen("RESUMING"));
+#endif
+			aul_send_app_resume_request_signal(pid, appid, pkgid, APP_TYPE_SERVICE);
+
+			if (!bg_allowed)
+				__prepare_to_wake_services(pid);
+
 			if ((ret = __nofork_processing(cmd, pid, kb, fd)) < 0) {
 				pid = ret;
+			} else {
+				delay_reply = 1;
 			}
 		} else if (cmd != APP_RESUME) {
+#ifdef _APPFW_FEATURE_AMD_MODULE_LOG
+			strncpy(log_status, "LAUNCHING", strlen("LAUNCHING"));
+#endif
+
+			__send_proc_prelaunch_signal(appid, pkgid, prelaunch_attribute);
+
 #ifdef _APPFW_FEATURE_DEBUG_LAUNCHPAD
 			if (bundle_get_type(kb, AUL_K_SDK) != BUNDLE_TYPE_NONE) {
-				_D("The svcapp(%s) is launched by debug-launchpad", appid);
+				SECURE_LOGD("The svcapp(%s) is launched by debug-launchpad", appid);
 				__set_appinfo_for_launchpad(ai, kb);
 				pid = app_send_cmd(DEBUG_LAUNCHPAD_PID, cmd, kb);
 				if (pid == AUL_R_ECOMM) {
 					pid = -ENOLAUNCHPAD;
 				}
-				proc_cgroup_launch(PROC_CGROUP_SET_LAUNCH_REQUEST, pid, appid, pkgid);
 			} else {
-				pid = service_start(_lcg, appid, app_path, kb);
-				proc_cgroup_launch(PROC_CGROUP_SET_SERVICE_REQUEST, pid, appid, pkgid);
+				pid = start_process(appid, app_path, kb);
 			}
 #else
-			pid = service_start(_lcg, appid, app_path, kb);
-			proc_cgroup_launch(PROC_CGROUP_SET_SERVICE_REQUEST, pid, appid, pkgid);
+			pid = start_process(appid, app_path, kb);
 #endif
+			aul_send_app_launch_request_signal(pid, appid, pkgid, component_type);
 		}
+
+		if (bg_allowed) {
+			g_idle_add(__check_service_only, (gpointer)pid);
+		}
+
 	} else {
 		_E("unkown application");
 	}
@@ -1879,39 +2829,83 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 			__real_send(fd, pid);
 	}
 
-	if(pid > 0) {
-#ifdef _APPFW_FEATURE_CONTACT_PHONE_AS_ONE_APP
-		// Add the appid into bundle to distinguish between Contacts and Phone.
-		if (strncmp(appid, "org.tizen.phone", strlen("org.tizen.phone")) == 0)
-			_status_add_app_info_list("org.tizen.contacts", app_path, curr_caller, pid, pad_pid);
-		else
+#ifdef _APPFW_FEATURE_AMD_MODULE_LOG
+	_status_log_save(log_status, appid);
 #endif
-			_status_add_app_info_list(appid, app_path, curr_caller, pid, pad_pid);
 
-#ifdef _APPFW_FEATURE_APP_CHECKER
-		const char *pkgtype = NULL;
-
-		pkgtype = appinfo_get_value(ai, AIT_TYPE);
-		if (pkgtype == NULL) {
-			_E("pkgtype is NULL");
-			return -1;
+	if(pid > 0) {
+		_status_add_app_info_list(appid, app_path, caller, pid, pad_pid, is_group_app);
+		_status_update_app_info_caller_pid(pid, caller_pid);
+		if (grant_permission) {
+			__add_shared_info(pid, caller_exec_label, callee_exec_label, paths);
+			if (caller_exec_label) {
+				free(caller_exec_label);
+				caller_exec_label = NULL;
+			}
+			if (callee_exec_label) {
+				free(callee_exec_label);
+				callee_exec_label = NULL;
+			}
 		}
 
-		ret = ac_server_check_launch_privilege(appid, pkgtype, pid);
-		return ret != AC_R_ERROR ? pid : -1;
+#ifdef _APPFW_FEATURE_AMD_MODULE_LOG
+		snprintf(log_status, AUL_PR_NAME, "SUCCESS: %d", pid);
+		_status_log_save(log_status, appid);
+#endif
+
+#ifdef _APPFW_FEATURE_APP_CHECKER
+		pkg_type = appinfo_get_value(ai, AIT_TYPE);
+		if (!pkg_type)
+			return -1;
+
+		ret = ac_server_check_launch_privilege(appid, pkg_type, pid);
+		if (ret != AC_R_ERROR) {
+			traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
+			return pid;
+		} else {
+			traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
+			return -1;
+		}
 #endif
 	}
+#ifdef _APPFW_FEATURE_AMD_MODULE_LOG
+	else {
+		_status_log_save("FAILURE", appid);
+	}
+#endif
 
+	traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 	return pid;
 }
 
 int __e17_status_handler(int pid, int status, void *data)
 {
-	if( status == 0 || status == 3) {
+	if (status == PROC_STATUS_FG) {
+		__del_fgmgr_list(pid);
+
+#ifdef _APPFW_FEATURE_AMD_KEY
 		_D("pid(%d) status(%d)", pid, status);
 		if(_input_window_get() != 0)
 			ecore_x_pointer_ungrab();
+		if(_key_ungrab(KEY_BACK) < 0) {
+			_W("back key ungrab error");
+		} else {
+			_D("back key ungrab");
+		}
 		g_source_remove(grab_timer_id);
+#endif
+		_status_update_app_info_list(pid, STATUS_VISIBLE, FALSE);
+#ifdef _APPFW_FEATURE_TERMINATE_UNMANAGEABLE_APP
+#ifdef _APPFW_FEATURE_SEND_HOME_LAUNCH_SIGNAL
+		__check_home_app(pid);
+#endif
+#endif
+	} else if (status == PROC_STATUS_BG) {
+		_status_update_app_info_list(pid, STATUS_BG, FALSE);
+	} else if (status == PROC_STATUS_LAUNCH) {
+		_D("pid(%d) status(%d)", pid, status);
+		traceBegin(TTRACE_TAG_APPLICATION_MANAGER, "AUL:AMD:EFFECT_DONE");
+		traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 	}
 
 	return 0;
@@ -1926,7 +2920,6 @@ int _launch_init(struct amdmgr* amd)
 	amd_cmdline = __proc_get_cmdline_bypid(getpid());
 
 	_laf = amd->af;
-	_lcg = amd->cg;
 
 	conn = dbus_bus_get(DBUS_BUS_SYSTEM, NULL);
 	if (!conn) {
@@ -1938,6 +2931,8 @@ int _launch_init(struct amdmgr* amd)
 
 	_D("ret : %d", ret);
 
+	__preexec_init(0, NULL);
+
 	return 0;
 }
 
@@ -1947,9 +2942,49 @@ void _set_atom_effect(void)
 }
 
 void __set_appinfo_for_launchpad(const struct appinfo *ai, bundle *kb) {
+	int ret;
+
 	_D("Add hwacc, taskmanage, app_path and pkg_type into bundle for sending those to launchpad.");
-	bundle_add(kb, AUL_K_HWACC, appinfo_get_value(ai, AIT_HWACC));
+	ret = bundle_del(kb, AUL_K_HWACC);
+	if (ret != BUNDLE_ERROR_NONE)
+		_D("bundle_del error: %d", ret);
+	ret = bundle_add(kb, AUL_K_HWACC, appinfo_get_value(ai, AIT_HWACC));
+	if (ret != BUNDLE_ERROR_NONE)
+		_E("failed to set AUL_K_HWACC: ret(%d)", ret);
+
+
+	bundle_del(kb, AUL_K_TASKMANAGE);
+	if (ret != BUNDLE_ERROR_NONE)
+		_D("bundle_del error: %d", ret);
 	bundle_add(kb, AUL_K_TASKMANAGE, appinfo_get_value(ai, AIT_TASKMANAGE));
+	if (ret != BUNDLE_ERROR_NONE)
+		_E("failed to set AUL_K_TASKMANAGE: ret(%d)", ret);
+
+	bundle_del(kb, AUL_K_EXEC);
+	if (ret != BUNDLE_ERROR_NONE)
+		_D("bundle_del error: %d", ret);
 	bundle_add(kb, AUL_K_EXEC, appinfo_get_value(ai, AIT_EXEC));
+	if (ret != BUNDLE_ERROR_NONE)
+		_E("failed to set AUL_K_EXEC: ret(%d)", ret);
+
+	bundle_del(kb, AUL_K_PACKAGETYPE);
+	if (ret != BUNDLE_ERROR_NONE)
+		_D("bundle_del error: %d", ret);
 	bundle_add(kb, AUL_K_PACKAGETYPE, appinfo_get_value(ai, AIT_TYPE));
+	if (ret != BUNDLE_ERROR_NONE)
+		_E("failed to set AUL_K_PACKAGETYPE: ret(%d)", ret);
+
+	bundle_del(kb, AUL_K_INTERNAL_POOL);
+	if (ret != BUNDLE_ERROR_NONE)
+		_D("bundle_del error: %d", ret);
+	bundle_add(kb, AUL_K_INTERNAL_POOL, appinfo_get_value(ai, AIT_POOL));
+	if (ret != BUNDLE_ERROR_NONE)
+		_E("failed to set AUL_K_INTERNAL_POOL: ret(%d)", ret);
+
+	bundle_del(kb, AUL_K_PKGID);
+	if (ret != BUNDLE_ERROR_NONE)
+		_D("bundle_del error: %d", ret);
+	bundle_add(kb, AUL_K_PKGID, appinfo_get_value(ai, AIT_PKGID));
+	if (ret != BUNDLE_ERROR_NONE)
+		_E("failed to set AUL_K_PKGID: ret(%d)", ret);
 }

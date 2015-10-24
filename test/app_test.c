@@ -19,6 +19,7 @@
  *
  */
 
+#define _GNU_SOURCE
 #include <poll.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -27,6 +28,7 @@
 /* ecore-glib integration */
 
 #include <Ecore.h>
+#include <bundle_internal.h>
 
 extern int aul_listen_app_dead_signal(int (*func) (int, void *), void *data);
 
@@ -114,6 +116,8 @@ static int aul_handler(aul_type type, bundle *kb, void *data)
 		break;
 	case AUL_TERMINATE:
 		exit(0);
+		break;
+	default:
 		break;
 	}
 	return 0;

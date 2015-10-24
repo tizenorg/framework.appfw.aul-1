@@ -19,13 +19,17 @@
  *
  */
 
+#define _GNU_SOURCE
 #include <Ecore_X.h>
 #include <Ecore_Input.h>
+#ifdef _APPFW_FEATURE_AMD_KEY
 #include <utilX.h>
+#endif
 #include <Ecore.h>
 #include <Evas.h>
 #include <aul.h>
 #include <glib.h>
+#include <bundle_internal.h>
 
 #include "amd_config.h"
 #include "amd_key.h"
@@ -38,13 +42,14 @@ static struct {
 	Ecore_Event_Handler *key_up;
 	Ecore_Event_Handler *key_down;
 } key_info = {
-	.win = NULL,
+	.win = 0,
 	.key_up = NULL,
 	.key_down = NULL,
 };
 
 GSList *key_pid_list = NULL;
 
+#ifdef _APPFW_FEATURE_AMD_KEY
 static Eina_Bool __key_release_cb(void *data, int type, void *event);
 static Eina_Bool __key_press_cb(void *data, int type, void *event);
 
@@ -60,6 +65,11 @@ static Eina_Bool __key_release_cb(void *data, int type, void *event)
 
 	if (!ev) {
 		_D("Invalid event object");
+		return ECORE_CALLBACK_RENEW;
+	}
+
+	if (strcmp(ev->keyname, X_KEY_BACK) == 0) {
+		_D("skip back key case");
 		return ECORE_CALLBACK_RENEW;
 	}
 
@@ -97,6 +107,11 @@ static Eina_Bool __key_press_cb(void *data, int type, void *event)
 		return ECORE_CALLBACK_RENEW;
 	}
 
+	if (strcmp(ev->keyname, X_KEY_BACK) == 0) {
+		_D("skip back key case");
+		return ECORE_CALLBACK_RENEW;
+	}
+
 	entry = key_pid_list;
 	if (entry && entry->data) {
 		pid_data = (int *) entry->data;
@@ -114,9 +129,11 @@ static Eina_Bool __key_press_cb(void *data, int type, void *event)
 
 	return ECORE_CALLBACK_RENEW;
 }
+#endif
 
 int _register_key_event(int pid)
 {
+#ifdef _APPFW_FEATURE_AMD_KEY
 	int *pid_data;
 	GSList *entry;
 
@@ -138,12 +155,13 @@ int _register_key_event(int pid)
 			_D("pid : %d",*pid_data);
 		}
 	}
-
+#endif
 	return 0;
 }
 
 int _unregister_key_event(int pid)
 {
+#ifdef _APPFW_FEATURE_AMD_KEY
 	GSList *entry;
 	int *pid_data;
 
@@ -166,7 +184,7 @@ int _unregister_key_event(int pid)
 			_D("pid : %d",*pid_data);
 		}
 	}
-
+#endif
 	return 0;
 }
 
@@ -177,6 +195,7 @@ Ecore_X_Window _input_window_get()
 
 int _key_init()
 {
+#ifdef _APPFW_FEATURE_AMD_KEY
 	key_info.win = ecore_x_window_input_new(ecore_x_window_root_first_get(), 0, 0, 1, 1);
 	if (!key_info.win) {
 		_D("Failed to create hidden window");
@@ -190,14 +209,14 @@ int _key_init()
 
 	ecore_x_window_show(key_info.win);
 
-	utilx_grab_key(ecore_x_display_get(), key_info.win, KEY_PLAYCD, SHARED_GRAB);
-	utilx_grab_key(ecore_x_display_get(), key_info.win, KEY_STOPCD, SHARED_GRAB);
-	utilx_grab_key(ecore_x_display_get(), key_info.win, KEY_PAUSECD, SHARED_GRAB);
-	utilx_grab_key(ecore_x_display_get(), key_info.win, KEY_NEXTSONG, SHARED_GRAB);
-	utilx_grab_key(ecore_x_display_get(), key_info.win, KEY_PREVIOUSSONG, SHARED_GRAB);
-	utilx_grab_key(ecore_x_display_get(), key_info.win, KEY_REWIND, SHARED_GRAB);
-	utilx_grab_key(ecore_x_display_get(), key_info.win, KEY_FASTFORWARD, SHARED_GRAB);
-	utilx_grab_key(ecore_x_display_get(), key_info.win, KEY_PLAYPAUSE, SHARED_GRAB);
+	utilx_grab_key(ecore_x_display_get(), key_info.win, X_KEY_PLAYCD, SHARED_GRAB);
+	utilx_grab_key(ecore_x_display_get(), key_info.win, X_KEY_STOPCD, SHARED_GRAB);
+	utilx_grab_key(ecore_x_display_get(), key_info.win, X_KEY_PAUSECD, SHARED_GRAB);
+	utilx_grab_key(ecore_x_display_get(), key_info.win, X_KEY_NEXTSONG, SHARED_GRAB);
+	utilx_grab_key(ecore_x_display_get(), key_info.win, X_KEY_PREVIOUSSONG, SHARED_GRAB);
+	utilx_grab_key(ecore_x_display_get(), key_info.win, X_KEY_REWIND, SHARED_GRAB);
+	utilx_grab_key(ecore_x_display_get(), key_info.win, X_KEY_FASTFORWARD, SHARED_GRAB);
+	utilx_grab_key(ecore_x_display_get(), key_info.win, X_KEY_PLAYPAUSE, SHARED_GRAB);
 
 	key_info.key_up = ecore_event_handler_add(ECORE_EVENT_KEY_UP, __key_release_cb, NULL);
 	if (!key_info.key_up) {
@@ -208,7 +227,50 @@ int _key_init()
 	if (!key_info.key_down) {
 		_D("Failed to register a key down event handler");
 	}
-
+#endif
 	return 0;
 }
 
+int _key_grab(const char* key, int grab_mode)
+{
+#ifdef _APPFW_FEATURE_AMD_KEY
+	int ret;
+
+	if (!key_info.win) {
+		_D("There is no created hidden window");
+	}
+
+	_D("_key_grab, win : %x", key_info.win);
+
+	ret = utilx_grab_key(ecore_x_display_get(), key_info.win, key, grab_mode);
+	if(ret < 0) {
+		_W("fail(%d) to grab key(%s-%d)", ret, key, grab_mode);
+	}
+
+	return ret;
+#else
+	return 0;
+#endif
+}
+
+int _key_ungrab(const char* key)
+{
+#ifdef _APPFW_FEATURE_AMD_KEY
+	int ret;
+
+	if (!key_info.win) {
+		_D("There is no created hidden window");
+	}
+
+	_D("_key_ungrab, win : %x", key_info.win);
+
+	ret = utilx_ungrab_key(ecore_x_display_get(), key_info.win, key);
+	if(ret < 0) {
+		_W("fail(%d) to ungrab key(%s)", ret, key);
+	}
+
+	return ret;
+#else
+	return 0;
+#endif
+}

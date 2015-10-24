@@ -26,6 +26,7 @@
 #include <glib.h>
 
 int aul_initialize();
+void aul_finalize();
 int aul_register_init_callback(
 	int (*aul_handler)(aul_type type, bundle *, void *), void *data);
 int aul_is_initialized();
@@ -40,9 +41,12 @@ int app_request_to_launchpad(int cmd, const char *pkgname, bundle *kb);
 int _app_start_res_prepare(bundle *kb);
 int app_result(int cmd, bundle *kb, int launched_pid);
 int aul_send_result(bundle *kb, int is_cancel);
+int app_subapp_terminate_request();
 int aul_launch_app_with_result(const char *pkgname, bundle *kb,
 			       void (*cbfunc) (bundle *, int, void *),
 			       void *data);
+
+int __call_aul_handler(aul_type type, bundle *kb);
 
 gboolean __aul_glib_handler(gpointer data);
 

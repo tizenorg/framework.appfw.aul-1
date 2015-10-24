@@ -19,11 +19,10 @@
  *
  */
 
-
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <utilX.h>
 #include <glib.h>
 #include <poll.h>
 #include <bundle.h>
@@ -60,6 +59,7 @@ int aul_register_key_init_callback(
 
 SLPAPI int aul_key_init(int (*aul_handler) (bundle *, void *), void *data)
 {
+#ifdef _APPFW_FEATURE_AMD_KEY
 	int fd;
 	GPollFD *gpollfd;
 	GSource *src;
@@ -76,9 +76,7 @@ SLPAPI int aul_key_init(int (*aul_handler) (bundle *, void *), void *data)
 
 	gpollfd = (GPollFD *) g_malloc(sizeof(GPollFD));
 	if (gpollfd == NULL) {
-		_E("out of memory");
 		g_source_unref(src);
-		close(fd);
 		return AUL_R_ERROR;
 	}
 
@@ -95,12 +93,13 @@ SLPAPI int aul_key_init(int (*aul_handler) (bundle *, void *), void *data)
 		return AUL_R_ERROR;
 
 	g_source_unref(src);
-
+#endif
 	return AUL_R_OK;
 }
 
 SLPAPI int aul_key_reserve()
 {
+#ifdef _APPFW_FEATURE_AMD_KE
 	bundle *kb;
 	int ret;
 
@@ -109,10 +108,14 @@ SLPAPI int aul_key_reserve()
 	bundle_free(kb);
 
 	return ret;
+#else
+	return AUL_R_OK;
+#endif
 }
 
 SLPAPI int aul_key_release()
 {
+#ifdef _APPFW_FEATURE_AMD_KE
 	bundle *kb;
 	int ret;
 
@@ -121,7 +124,7 @@ SLPAPI int aul_key_release()
 	bundle_free(kb);
 
 	return ret;
+#else
+	return AUL_R_OK;
+#endif
 }
-
-
-

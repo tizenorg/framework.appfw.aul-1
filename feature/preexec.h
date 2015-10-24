@@ -98,7 +98,7 @@ static inline void __preexec_init(int argc, char **argv)
 			return;
 		}
 
-		handle = dlopen(sopath, RTLD_NOW);
+		handle = dlopen(sopath, RTLD_GLOBAL | RTLD_LAZY);
 		if (handle == NULL) {
 			free(type_t);
 			continue;
@@ -147,7 +147,7 @@ static inline void __preexec_run(const char *pkg_type, const char *pkg_name,
 	GSList *iter = NULL;
 	preexec_list_t *type_t;
 
-	if (!preexec_initialized)
+	if (!preexec_initialized || !pkg_type)
 		return;
 
 	for (iter = preexec_list; iter != NULL; iter = g_slist_next(iter)) {

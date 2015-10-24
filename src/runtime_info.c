@@ -17,6 +17,7 @@
  *
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -24,10 +25,12 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
+#include <limits.h>
 
 #include "aul.h"
 #include "aul_api.h"
 #include "simple_util.h"
+#include "aul_zone.h"
 
 #define _MAX_STATUS_BUF_SIZE	64
 #define _MAX_STAT_BUF_SIZE		1024
@@ -37,7 +40,7 @@ static const char PROC_KEY_PROCESS_MEMORY[] = "VmSize";
 
 long long __get_process_running_time(pid_t pid)
 {
-	char proc_path[sizeof("/proc//stat") + sizeof(int) * 3] = { 0, };
+	char proc_path[_MAX_STAT_BUF_SIZE] = { 0, };
 	char *line = NULL;
 	ssize_t res = -1;
 	int i = 0;
@@ -50,12 +53,12 @@ long long __get_process_running_time(pid_t pid)
 	if (pid == -1) //self
 	{
 		_D("self");
-		strcpy(proc_path, "/proc/self/stat");
+		snprintf(proc_path, sizeof(proc_path), "%sproc/self/stat", _get_root_path());
 	}
 	else if (pid > 0)
 	{
 		SECURE_LOGD("pid: %d", pid);
-		sprintf(proc_path, "/proc/%u/task", pid);
+		snprintf(proc_path, sizeof(proc_path), "%sproc/%u/task", _get_root_path(), pid);
 		_E("Not supported");
 		return -1;
 	}
@@ -152,6 +155,10 @@ int __get_info_from_proc(const char* path, const char* key)
 			{
 				if (strncmp(field, key, strlen(key)) == 0)
 				{
+					if (value > (INT_MAX / 1024)) {
+						value = INT_MAX / 1024;
+					}
+
 					SECURE_LOGD("PROC %s VALUE: %d\n", field, value * 1024);
 
 					fclose(fp);
@@ -169,7 +176,11 @@ int __get_info_from_proc(const char* path, const char* key)
 
 SLPAPI int aul_get_app_allocated_memory(void)
 {
-	return __get_info_from_proc(PROC_PROCESS_STATUS_INFO, PROC_KEY_PROCESS_MEMORY);
+	char buf[_MAX_STAT_BUF_SIZE] = {0, };
+
+	snprintf(buf, _MAX_STAT_BUF_SIZE - 1, "%s%s", _get_root_path(),
+	         PROC_PROCESS_STATUS_INFO);
+	return __get_info_from_proc(buf, PROC_KEY_PROCESS_MEMORY);
 }
 
 SLPAPI long long aul_get_app_running_time(void)

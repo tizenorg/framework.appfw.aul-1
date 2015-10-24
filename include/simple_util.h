@@ -40,8 +40,10 @@
 #endif
 
 
-#define MAX_LOCAL_BUFSZ 128
+#define MAX_LOCAL_BUFSZ 512
 #define MAX_PID_STR_BUFSZ 20
+#define MAX_STATUS_STR_BUFSZ 32
+#define MAX_OOM_ADJ_BUFSZ 32
 
 #define _E(fmt, arg...) LOGE(fmt, ##arg)
 #define _D(fmt, arg...) LOGD(fmt, ##arg)
@@ -64,6 +66,7 @@
 	} \
 } while (0)
 
+int __proc_check_app(const char *path, int pid);
 int __proc_iter_cmdline(int (*iterfunc)
 			 (const char *dname, const char *cmdline, void *priv),
 			void *priv);

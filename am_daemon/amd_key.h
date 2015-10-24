@@ -24,10 +24,22 @@
 
 #include <Ecore_X.h>
 
+#define X_KEY_PLAYCD "XF86AudioPlay"
+#define X_KEY_STOPCD "XF86AudioStop"
+#define X_KEY_PAUSECD "XF86AudioPause"
+#define X_KEY_NEXTSONG "XF86AudioNext"
+#define X_KEY_PREVIOUSSONG "XF86AudioPrev"
+#define X_KEY_REWIND "XF86AudioRewind"
+#define X_KEY_FASTFORWARD "XF86AudioForward"
+#define X_KEY_PLAYPAUSE "XF86AudioPlayPause"
+#define X_KEY_BACK "XF86Stop"
+
 int _key_init(void);
 int _register_key_event(int pid);
 int _unregister_key_event(int pid);
 Ecore_X_Window _input_window_get(void);
+int _key_grab(const char* key, int grab_mode);
+int _key_ungrab(const char* key);
 
 #endif
 

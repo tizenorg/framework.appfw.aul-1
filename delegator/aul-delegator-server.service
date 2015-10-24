@@ -1,0 +1,7 @@
+[Unit]
+Description=Delegator
+
+[Service]
+BusName=org.tizen.aul.delegator
+ExecStart=/usr/bin/aul-delegator-server
+

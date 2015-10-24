@@ -19,18 +19,22 @@
  *
  */
 
-
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <vasum.h>
+#include <bundle_internal.h>
 
 #include "aul.h"
+#include "aul_svc.h"
 #include "aul_api.h"
 #include "app_sock.h"
 #include "simple_util.h"
 #include "launch.h"
 #include "aul_util.h"
+#include "aul_zone.h"
 
 /*#define ACTIVATE_PREEMPT_FEATURE*/
 
@@ -48,7 +52,6 @@ static app_resultcb_info_t *rescb_head = NULL;
 #ifdef _APPFW_FEATURE_APP_CONTROL_LITE
 static app_resultcb_info_t *rescb_head2 = NULL;
 #endif
-
 
 static int is_subapp = 0;
 subapp_fn subapp_cb = NULL;
@@ -199,22 +202,12 @@ static int __call_app_result_callback(bundle *kb, int is_cancel,
 				    int launched_pid)
 {
 	app_resultcb_info_t *info;
-	int pgid;
 	char *fwdpid_str;
 
 	if (((info = __find_resultcb(launched_pid)) == NULL)
 	    || (launched_pid < 0)) {
-		_E("reject by pid - wait pid = %d, recvd pid = %d\n", getpid(),
-		   launched_pid);
-
-		/* second chance - support app launched by shell script*/
-		pgid = getpgid(launched_pid);
-		if (pgid <= 1)
-			return -1;
-		if ((info = __find_resultcb(pgid)) == NULL) {
-			_E("second chance : also reject pgid - %d\n", pgid);
-			return -1;
-		}
+		_E("reject by pid - wait pid = %d, recvd pid = %d\n", getpid(), launched_pid);
+		return -1;
 	}
 
 	if (info->cb_func == NULL || kb == NULL)
@@ -238,7 +231,7 @@ static int __call_app_result_callback(bundle *kb, int is_cancel,
 		__remove_resultcb(info);
 		__add_resultcb2(newinfo.launched_pid, newinfo.cb_func, newinfo.priv_data);
 
-		_D("change callback __AUL_FWD_UG_ID__ - %d\n", newinfo.launched_pid);
+		_D("change callback, fwd pid: %d", newinfo.launched_pid);
 
 		goto end;
 	}
@@ -261,7 +254,7 @@ static int __call_app_result_callback(bundle *kb, int is_cancel,
 		__remove_resultcb(info);
 		__add_resultcb(newinfo.launched_pid, newinfo.cb_func, newinfo.priv_data);
 
-		_D("change callback - %s\n",AUL_K_FWD_CALLEE_PID);
+		_D("change callback, fwd pid: %d", newinfo.launched_pid);
 
 		goto end;
 	}
@@ -372,8 +365,8 @@ SLPAPI int aul_launch_app_with_result(const char *pkgname, bundle *kb,
 	int ret;
 #ifdef _APPFW_FEATURE_APP_CONTROL_LITE
 	int id = -1;
-	char id_str[256] = {0, };
 #endif
+	char id_str[256] = {0, };
 
 	if (!aul_is_initialized()) {
 		if (aul_launch_init(NULL, NULL) < 0)
@@ -386,9 +379,14 @@ SLPAPI int aul_launch_app_with_result(const char *pkgname, bundle *kb,
 	pthread_mutex_lock(&result_lock);
 #ifdef _APPFW_FEATURE_APP_CONTROL_LITE
 	id = rand();
-	sprintf(id_str, "%d", id);
+	snprintf(id_str, sizeof(id_str), "%d", id);
 	bundle_add(kb, "__AUL_UG_ID__", id_str);
 #endif
+	if (_pid_offset > 0) {
+		snprintf(id_str, sizeof(id_str), "%d", getpid() + _pid_offset);
+		bundle_add(kb, AUL_K_HOST_PID, id_str);
+	}
+
 	ret = app_request_to_launchpad(APP_START_RES, pkgname, kb);
 	if (ret > 0)
 		__add_resultcb(ret, cbfunc, data);
@@ -433,6 +431,10 @@ SLPAPI int aul_forward_app(const char* pkgname, bundle *kb)
 
 	bundle_del(kb, AUL_K_ORG_CALLER_PID);
 	bundle_add(kb, AUL_K_ORG_CALLER_PID, caller);
+
+	bundle_del(kb, AUL_SVC_K_CAN_BE_LEADER);
+	bundle_del(kb, AUL_SVC_K_REROUTE);
+	bundle_del(kb, AUL_SVC_K_RECYCLE);
 
 #ifdef _APPFW_FEATURE_APP_CONTROL_LITE
 	caller_pid = atoi(caller);
@@ -580,11 +582,11 @@ int app_subapp_terminate_request()
 {
 	if(is_subapp) {
 		subapp_cb(subapp_data);
-
-		return 0;
+	} else {
+		__call_aul_handler(AUL_TERMINATE, NULL);
 	}
 
-	return -1;
+	return 0;
 }
 
 SLPAPI int aul_set_subapp(subapp_fn cb, void *data)
@@ -651,6 +653,32 @@ SLPAPI int aul_remove_caller_cb(int pid)
 	return 0;
 }
 
+static gboolean __invoke_caller_cb(gpointer data)
+{
+	int launched_pid = 0;
+	app_resultcb_info_t *info;
+
+	if (data == NULL)
+		return G_SOURCE_REMOVE;
+
+	launched_pid = GPOINTER_TO_INT(data);
+
+	info = __find_resultcb(launched_pid);
+
+	if (info && info->caller_cb)
+		info->caller_cb(info->launched_pid, info->caller_data);
+
+	return G_SOURCE_REMOVE;
+}
+
+SLPAPI int aul_invoke_caller_cb(int pid)
+{
+	if (g_idle_add_full(G_PRIORITY_DEFAULT, __invoke_caller_cb, GINT_TO_POINTER(pid), NULL) > 0)
+		return -1;
+
+	return 0;
+}
+
 #ifdef _APPFW_FEATURE_APP_CONTROL_LITE
 SLPAPI int aul_call_ug_result_callback(bundle *kb, int is_cancel, int id)
 {
@@ -667,4 +695,5 @@ SLPAPI int aul_call_ug_result_callback(bundle *kb, int is_cancel, int id)
 	return 0;
 }
 #endif
+
 

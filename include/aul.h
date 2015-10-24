@@ -97,7 +97,8 @@ enum app_status {
 	STATUS_BG,
 	STATUS_DYING,
 	STATUS_HOME,
-	STATUS_NORESTART
+	STATUS_NORESTART,
+	STATUS_SERVICE
 };
 
 /** @} */
@@ -129,10 +130,10 @@ typedef enum _aul_type{
 	AUL_START,
 	AUL_RESUME,
 	AUL_TERMINATE,
-#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
-	AUL_PAUSE_LCD_OFF,
-	AUL_RESUME_LCD_ON,
-#endif
+	AUL_TERMINATE_BGAPP,
+	AUL_PAUSE,
+	AUL_SUSPEND,
+	AUL_WAKE,
 }aul_type;
 
 /** AUL internal private key */
@@ -211,20 +212,50 @@ typedef enum _aul_type{
 /** AUL internal private key */
 #define AUL_K_PID		"__AUL_PID__"
 /** AUL internal private key */
+#define AUL_K_WID		"__AUL_WID__"
+/** AUL internal private key */
+#define AUL_K_LEADER_PID	"__AUL_LEADER_PID__"
+
+/** AUL internal private key */
 #define AUL_K_PRELAUCHING	"__AUL_PRELAUCHING__"
 
-#ifdef _APPFW_FEATURE_CONTACT_PHONE_AS_ONE_APP
-/** AUL internal private key - To distinguish between Contacts and Phone */
-#define AUL_K_INTERNAL_APPID	"__AUL_INTERNAL_APPID__"
-#endif
+/** AUL internal private key */
+#define AUL_K_OWNER_PID		"__AUL_OWNER_PID__"
+/** AUL internal private key */
+#define AUL_K_CHILD_PID		"__AUL_CHILD_PID__"
 
 #ifdef _APPFW_FEATURE_PROCESS_POOL
-#define AUL_K_LAUNCHPAD_TYPE   "__AUL_LAUNCHPAD_TYPE__"
+#define AUL_K_INTERNAL_POOL "__AUL_INTERNAL_POOL__"
 #endif
 
 #ifdef _APPFW_FEATURE_DATA_CONTROL
 #define AUL_K_DATA_CONTROL_TYPE   "__AUL_DATA_CONTROL_TYPE__"
 #endif
+
+/** AUL internal private key */
+#define AUL_K_HOST_PID	"__AUL_HOST_PID__"
+
+/** Internal operation for launching application which is other zone */
+#define AUL_SVC_OPERATION_JUMP	"http://tizen.org/appcontrol/operation/jump"
+#define AUL_SVC_K_JUMP_ZONE_NAME	"__K_JUMP_DOMAIN_NAME__"
+#define AUL_SVC_K_JUMP_ORIGIN_OPERATION	"__K_JUMP_ORIGIN_OPERATION__"
+#define AUL_SVC_K_FOCUS_ZONE "__K_FOCUS_ZONE__"
+#define AUL_SVC_K_RUA_STAT_CALLER		"__K_RUA_STAT_CALLER__"
+#define AUL_SVC_K_RUA_STAT_TAG		"__K_RUA_STAT_TAG__"
+
+
+#define AUL_K_ALLOWED_BG	"__AUL_INTERNAL_ALLOWED_BG__"
+
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+#define AUL_TEP_PATH			"_AUL_TEP_PATH_"
+int aul_check_tep_mount(const char *tep_path);
+int aul_is_tep_mount_dbus_done(const char *tep_string);
+#endif
+
+
+/** AUL internal private key */
+#define AUL_K_PKGID		"__AUL_PKGID_"
+
 
 /**
  * @brief	This is callback function for aul_launch_init
@@ -674,6 +705,7 @@ int aul_resume_pid(int pid);
  *	If you have not the permission, this API return AUL_R_ERROR. \n
 */
 int aul_terminate_pid(int pid);
+int aul_terminate_bgapp_pid(int pid);
 int aul_terminate_pid_without_restart(int pid);
 int aul_terminate_pid_async(int pid);
 
@@ -1332,6 +1364,7 @@ const char *aul_get_app_root_path(void);
 const char *aul_get_app_data_path(void);
 const char *aul_get_app_cache_path(void);
 const char *aul_get_app_resource_path(void);
+const char *aul_get_app_tep_resource_path(void);
 const char *aul_get_app_shared_data_path(void);
 const char *aul_get_app_shared_resource_path(void);
 const char *aul_get_app_shared_trusted_path(void);
@@ -1352,6 +1385,7 @@ int aul_subapp_terminate_request_pid(int pid);
 int aul_is_subapp(void);
 int aul_add_caller_cb(int pid,  void (*caller_cb) (int, void *), void *data);
 int aul_remove_caller_cb(int pid);
+int aul_invoke_caller_cb(int pid);
 
 #ifdef _APPFW_FEATURE_PROCESS_POOL
 void aul_set_preinit_window(void *evas_object);
@@ -1366,6 +1400,9 @@ void* aul_get_preinit_conformant(void);
 
 void aul_set_preinit_appid(const char *appid);
 
+void aul_set_preinit_pkgid(const char *pkgid);
+const char* aul_get_preinit_pkgid(void);
+
 int aul_launch_app_async(const char *appid, bundle *kb);
 
 #ifdef _APPFW_FEATURE_MULTI_INSTANCE
@@ -1374,7 +1411,163 @@ int aul_launch_app_for_multi_instance(const char *appid, bundle *kb);
 
 int aul_update_freezer_status(int pid, const char* type);
 
+int aul_send_app_launch_request_signal(int pid, const char* appid, const char* pkgid, const char* type);
+int aul_send_app_resume_request_signal(int pid, const char* appid, const char* pkgid, const char *type);
+int aul_send_app_terminate_request_signal(int pid, const char* appid, const char* pkgid, const char *type);
+int aul_send_app_status_change_signal(int pid, const char* appid, const char* pkgid, const char* status, const char *type);
+int aul_send_app_terminated_signal(int pid);
+int aul_send_app_group_signal(int owner_pid, int child_pid, const char *child_pkgid);
+
 int aul_status_update(int status);
+
+/**
+ * @par Description:
+ *	This API gets status of specified application process id.
+ * @par Purpose:
+ *	This API's purpose is to get the application's status.
+ *
+ * @param[in]	pid	pid of application
+ * @return	0 or greater if success, nagative value if fail
+ * @retval	STATUS_LAUNCHING
+ * @retval	STATUS_CREATED
+ * @retval	STATUS_FOCUS
+ * @retval	STATUS_VISIBLE
+ * @retval	STATUS_BG
+ * @retval	STATUS_DYING
+ * @retval	STATUS_HOME
+ * @retval	STATUS_NORESTART
+ * @see
+ *	aul_status_update
+ * @pre
+ * 	None
+ * @post
+ * 	None
+ * @code
+ * #include <aul.h>
+ *
+ * int iterfunc(const aul_app_info *info, void *data)
+ * {
+ *	int status;
+ *	status = aul_app_get_status_bypid(info->pid);
+ *	if (status == STATUS_FOCUS) {
+ *		printf("%s has focus", info->app_id);
+ *		(int *)data = info->pid;
+ *		return -1;
+ *	}
+ *	return 0;
+ * }
+ *
+ * int find_focus_app_pid()
+ * {
+ *	int pid = 0;
+ *	aul_app_get_running_app_info(iterfunc, &pid);
+ *	return pid;
+ * }
+ * @endcode
+ * @remark
+ *	None
+ */
+int aul_app_get_status_bypid(int pid);
+
+/**
+ * @par Description
+ * 	This API sets callback function that on application status changed.
+ * @par Purpose:
+ *	This API's purpose is to listen the application's status changed within
+ *	the caller process. In general, a library that required to release resource on
+ *	application's status may use this API.
+ *
+ * @param[in]	func	callback function
+ * @param[in]	data	user data
+ * @return	0 if success, negative value if fail
+ * @retval	AUL_R_OK	- success
+ * @retval	AUL_R_ERROR	- general error
+ * @see
+ *	aul_remove_status_local_cb
+ * @pre
+ *	None
+ * @post
+ * 	None
+ * @code
+ * #include <aul.h>
+ *
+ * int status_changed(int status, void *data)
+ * {
+ *	if (status == STATUS_FOCUS)
+ *		printf("%d has focus\n", getpid());
+ *
+ *	if (status == STATUS_VISIBLE)
+ *		printf("%d resume\n", getpid());
+ *
+ *	if (status == STATUS_BG0
+ *		printf("%d pause\n", getpid());
+ * }
+ *
+ * void listen_app_status()
+ * {
+ *	aul_add_status_local_cb(status_changed, NULL);
+ * }
+ * @endcode
+ * @remark
+ * 	None
+ *
+ */
+int aul_add_status_local_cb(int (*func) (int, void *), void *data);
+
+/**
+ * @par Description
+ * 	This API unsets callback function that on application status changed.
+ * @par Purpose:
+ *	This API's purpose is to remove callback that added by
+ *	aul_add_status_local_cb.
+ *
+ * @param[in]	func	callback function
+ * @param[in]	data	user data
+ * @return	0 if success, negative value if fail
+ * @retval	AUL_R_OK	- success
+ * @retval	AUL_R_ERROR	- general error
+ *
+ * @pre
+ *	None
+ * @post
+ * 	None
+ * @see
+ *	aul_add_status_local_cb
+ * @code
+ * #include <aul.h>
+ *
+ * int status_changed(int status, void *data)
+ * {
+ *	if (status == STATUS_FOCUS)
+ *		printf("%d has focus\n", getpid());
+ *
+ *	if (status == STATUS_VISIBLE)
+ *		printf("%d resume\n", getpid());
+ *
+ *	if (status == STATUS_BG0
+ *		printf("%d pause\n", getpid());
+ * }
+ *
+ * void listen_app_status()
+ * {
+ *	aul_add_status_local_cb(status_changed, NULL);
+ * }
+ *
+ * void ignore_app_status()
+ * {
+ *	aul_remove_status_local_cb(status_changed, NULL);
+ * }
+ *
+ * @endcode
+ * @remark
+ * 	None
+ *
+ */
+int aul_remove_status_local_cb(int (*func) (int, void *), void *data);
+
+int aul_invoke_status_local_cb(int status);
+
+int aul_running_list_update(char *appid, char *app_path, char *pid);
 
 int aul_get_app_allocated_memory(void);
 
@@ -1397,6 +1590,27 @@ int aul_get_support_legacy_lifecycle(void);
 
 char *aul_get_cmdline_bypid(int pid);
 
+int aul_app_group_get_window(int pid);
+int aul_app_group_set_window(int wid);
+void aul_app_group_get_leader_pids(int *cnt, int **pids);
+void aul_app_group_get_group_pids(int leader_pid, int *cnt, int **pids);
+int aul_app_group_get_leader_pid(int pid);
+int aul_app_group_clear_top(void);
+int aul_app_group_is_top(void);
+int aul_app_group_get_fg_flag(int pid);
+void aul_app_group_lower(int *exit);
+void aul_app_group_get_idle_pids(int *cnt, int **pids);
+
+char *aul_get_group_info(void);
+
+int aul_pause_app(const char *appid);
+int aul_pause_pid(int pid);
+int aul_app_get_pid(const char *appid);
+int aul_app_get_pid_cache(const char *appid);
+
+int aul_app_get_last_caller_pid(int pid);
+
+int aul_set_process_group(int parent_pid, int child_pid);
 /** @} */
 
 

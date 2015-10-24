@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,12 @@
 #include "amd_config.h"
 #include "simple_util.h"
 #include "amd_appinfo.h"
+#include "amd_launch.h"
+#include "amd_request.h"
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+#include <pkgmgr-info.h>
+#include <pkgmgrinfo_type.h>
+#endif
 
 
 #define SERVICE_GROUP "Service"
@@ -22,7 +29,6 @@ struct appinfomgr {
 enum _appinfo_idx {
 	_AI_FILE = 0, /* service filename */
 	_AI_NAME,
-	_AI_COMP,
 	_AI_EXEC,
 	_AI_TYPE,
 	_AI_ONBOOT,
@@ -49,14 +55,27 @@ enum _appinfo_idx {
 	_AI_MULTI_INSTANCE_MAINID,
 	_AI_TOGGLE_ORDER,
 #endif
-#ifdef _APPFW_FEATURE_MULTI_WINDOW
-	_AI_MULTI_WINDOW,
-#endif
 #ifdef _APPFW_FEATURE_TTS_MODE
 	_AI_TTS,
 #endif
 #ifdef _APPFW_FEATURE_ULTRA_POWER_SAVING_MODE
 	_AI_UPS,
+#endif
+#ifdef _APPFW_FEATURE_COOLDOWN_MODE_SUPPORT
+	_AI_COOLDOWN,
+#endif
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+	_AI_TEP,
+	_AI_STORAGE_TYPE,
+#endif
+	_AI_ALLOWED_BG,
+	_AI_API_VER,
+	_AI_LAUNCH_MODE,
+#ifdef _APPFW_FEATURE_EFFECTIVE_APPID
+	_AI_EFFECTIVE_APPID,
+#endif
+#ifdef _APPFW_FEATURE_PRIVATE_SERVICE
+	_AI_VISIBILITY,
 #endif
 	_AI_MAX,
 };
@@ -69,7 +88,6 @@ struct appinfo_t {
 
 static struct appinfo_t _appinfos[] = {
 	[_AI_NAME] = { "Name", AIT_NAME, },
-	[_AI_COMP] = { "Component", AIT_COMP, },
 	[_AI_EXEC] = { "Exec", AIT_EXEC, },
 	[_AI_TYPE] = { "PkgType", AIT_TYPE, },
 	[_AI_ONBOOT] = { "StartOnBoot", AIT_ONBOOT, },
@@ -96,15 +114,29 @@ static struct appinfo_t _appinfos[] = {
 	[_AI_MULTI_INSTANCE_MAINID] = { "multi-instance-mainid", AIT_MULTI_INSTANCE_MAINID, },
 	[_AI_TOGGLE_ORDER] = { "toggleOrder", AIT_TOGGLE_ORDER, },
 #endif
-#ifdef _APPFW_FEATURE_MULTI_WINDOW
-	[_AI_MULTI_WINDOW] = { "multi-window", AIT_MULTI_WINDOW, },
-#endif
 #ifdef _APPFW_FEATURE_TTS_MODE
 	[_AI_TTS] = { "TTS", AIT_TTS, },
 #endif
 #ifdef _APPFW_FEATURE_ULTRA_POWER_SAVING_MODE
 	[_AI_UPS] = { "UPS", AIT_UPS, },
 #endif
+#ifdef _APPFW_FEATURE_COOLDOWN_MODE_SUPPORT
+	[_AI_COOLDOWN] = { "CoolDown", AIT_COOLDOWN, },
+#endif
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+	[_AI_TEP] = {"Tep", AIT_TEP},
+	[_AI_STORAGE_TYPE] = {"StorageType", AIT_STORAGE_TYPE},
+#endif
+	[_AI_ALLOWED_BG] = {"AllowedBackground", AIT_ALLOWED_BG },
+	[_AI_API_VER] = {"ApiVersion", AIT_API_VER },
+	[_AI_LAUNCH_MODE] = {"launch_mode", AIT_LAUNCH_MODE },
+#ifdef _APPFW_FEATURE_EFFECTIVE_APPID
+	[_AI_EFFECTIVE_APPID] = {"effective-appid", AIT_EFFECTIVE_APPID },
+#endif
+#ifdef _APPFW_FEATURE_PRIVATE_SERVICE
+	[_AI_VISIBILITY] = {"visibility", AIT_VISIBILITY },
+#endif
+
 };
 
 struct appinfo {
@@ -145,7 +177,26 @@ static void _fini(struct appinfomgr *cf)
 	free(cf);
 }
 
-static int __app_info_insert_handler (const pkgmgrinfo_appinfo_h handle, void *data)
+static int __set_allowed_bg(const char *category_name, void *user_data)
+{
+	/* assume any of background category declared means that background running is allowed */
+	bool *allowed_bg = (bool *)user_data;
+
+	if (category_name && strcmp(category_name, "enable") == 0) {
+		return 0;
+	}
+
+	if (category_name && strcmp(category_name, "disable") == 0) {
+		*allowed_bg = false;
+		return -1;
+	}
+
+	_D("background category:%s", category_name);
+	*allowed_bg = true;
+	return -1;
+}
+
+static int __app_info_insert_handler(const pkgmgrinfo_appinfo_h handle, void *data)
 {
 	struct appinfo *c;
 	struct appinfomgr *cf = (struct appinfomgr *)data;
@@ -165,13 +216,9 @@ static int __app_info_insert_handler (const pkgmgrinfo_appinfo_h handle, void *d
 #ifdef _APPFW_FEATURE_MULTI_INSTANCE
 	bool multi_instance;
 #endif
-#ifdef _APPFW_FEATURE_MULTI_WINDOW
-	bool multi_window;
-#endif
 	bool onboot;
 	bool restart;
 	pkgmgrinfo_app_hwacceleration hwacc;
-	pkgmgrinfo_app_component component;
 	pkgmgrinfo_permission_type permission;
 	bool indicator_display;
 	int ret = -1;
@@ -182,7 +229,16 @@ static int __app_info_insert_handler (const pkgmgrinfo_appinfo_h handle, void *d
 #endif
 	int support_mode = 0;
 
-	_D("__app_info_insert_handler");
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+	char *tep_name = NULL;
+	pkgmgrinfo_installed_storage installed_storage;
+#endif
+	bool allowed_bg = false;
+#ifdef _APPFW_FEATURE_EFFECTIVE_APPID
+	char *effective_appid = NULL;
+#endif
+	char *api_ver = NULL;
+	char *mode = NULL;
 
 	if (!handle) {
 		_E("null app handle");
@@ -212,136 +268,111 @@ static int __app_info_insert_handler (const pkgmgrinfo_appinfo_h handle, void *d
 		return -1;
 	}
 
-	c->val[_AI_NAME] = strdup(appid); //TODO :
+	c->val[_AI_NAME] = strdup(appid);
 
-	ret = pkgmgrinfo_appinfo_get_component(handle, &component);
-	if (ret < 0) {
-		_E("fail to get component");
-		_free_appinfo(c);
-		return -1;
+	r = pkgmgrinfo_appinfo_is_multiple(handle, &multiple);
+	if(multiple == true)
+		c->val[_AI_MULTI] = strdup("true");
+	else c->val[_AI_MULTI] = strdup("false");
+
+	r = pkgmgrinfo_appinfo_is_taskmanage(handle, &taskmanage);
+	if (taskmanage == false) {
+		c->val[_AI_TASKMANAGE] = strdup("false");
+	} else {
+		c->val[_AI_TASKMANAGE] = strdup("true");
 	}
-	if(component == PMINFO_UI_APP) {
-		c->val[_AI_COMP] = strdup("ui"); //TODO :
 
-		r = pkgmgrinfo_appinfo_is_multiple(handle, &multiple);
-		if(multiple == true)
-			c->val[_AI_MULTI] = strdup("true");
-		else c->val[_AI_MULTI] = strdup("false");
+	r = pkgmgrinfo_appinfo_is_preload(handle, &preload);
+	if (preload == false) {
+		c->val[_AI_PRELOAD] = strdup("false");
+	} else {
+		c->val[_AI_PRELOAD] = strdup("true");
+	}
 
-		r = pkgmgrinfo_appinfo_is_taskmanage(handle, &taskmanage);
-		if (taskmanage == false) {
-			c->val[_AI_TASKMANAGE] = strdup("false");
+	if(gles == 0) {
+		c->val[_AI_HWACC] = strdup("NOT_USE");
+	} else {
+		r = pkgmgrinfo_appinfo_get_hwacceleration(handle, &hwacc);
+		if (r < 0){
+			_E("ERROR IN FETCHING HWACCELERATION INFO\n");
+			c->val[_AI_HWACC] = NULL;
 		} else {
-			c->val[_AI_TASKMANAGE] = strdup("true");
-		}
-
-		r = pkgmgrinfo_appinfo_is_preload(handle, &preload);
-		if (preload == false) {
-			c->val[_AI_PRELOAD] = strdup("false");
-		} else {
-			c->val[_AI_PRELOAD] = strdup("true");
-		}
-
-		if(gles == 0) {
-			c->val[_AI_HWACC] = strdup("NOT_USE");
-		} else {
-
-			r = pkgmgrinfo_appinfo_get_hwacceleration(handle, &hwacc);
 			if (hwacc == PMINFO_HWACCELERATION_ON) {
 				c->val[_AI_HWACC] = strdup("USE");
-			} else if (hwacc == PMINFO_HWACCELERATION_DEFAULT) {
-				c->val[_AI_HWACC] = strdup("SYS");
-			} else {
+			} else if (hwacc == PMINFO_HWACCELERATION_OFF) {
 				c->val[_AI_HWACC] = strdup("NOT_USE");
+			} else {
+				c->val[_AI_HWACC] = strdup("SYS");
 			}
 		}
+	}
 
-		r = pkgmgrinfo_appinfo_is_indicator_display_allowed(handle, &indicator_display);
-		if (r <0 ){
-			_E("ERROR IN FETCHING INDICATOR DISP INFO\n");
+	r = pkgmgrinfo_appinfo_is_indicator_display_allowed(handle, &indicator_display);
+	if (r <0 ){
+		_E("ERROR IN FETCHING INDICATOR DISP INFO\n");
+		c->val[_AI_INDICATORDISP] = strdup("true");
+	}else{
+		if (indicator_display == true){
 			c->val[_AI_INDICATORDISP] = strdup("true");
 		}else{
-			if (indicator_display == true){
-				c->val[_AI_INDICATORDISP] = strdup("true");
-			}else{
-				c->val[_AI_INDICATORDISP] = strdup("false");
-			}
+			c->val[_AI_INDICATORDISP] = strdup("false");
 		}
+	}
 
-		r = pkgmgrinfo_appinfo_get_effectimage(handle, &portraitimg, &landscapeimg);
-		if (r < 0){
-			_E("ERROR IN FETCHING EFFECT IMAGES\n");
+	r = pkgmgrinfo_appinfo_get_effectimage(handle, &portraitimg, &landscapeimg);
+	if (r < 0){
+		_E("ERROR IN FETCHING EFFECT IMAGES\n");
+		c->val[_AI_EFFECTIMAGEPORT] = NULL;
+		c->val[_AI_EFFECTIMAGELAND] = NULL;
+	}else{
+		if (portraitimg)
+			c->val[_AI_EFFECTIMAGEPORT] = strdup(portraitimg);
+		else
 			c->val[_AI_EFFECTIMAGEPORT] = NULL;
+		if (landscapeimg)
+			c->val[_AI_EFFECTIMAGELAND] = strdup(landscapeimg);
+		else
 			c->val[_AI_EFFECTIMAGELAND] = NULL;
-		}else{
-			if (portraitimg)
-				c->val[_AI_EFFECTIMAGEPORT] = strdup(portraitimg);
-			else
-				c->val[_AI_EFFECTIMAGEPORT] = NULL;
-			if (landscapeimg)
-				c->val[_AI_EFFECTIMAGELAND] = strdup(landscapeimg);
-			else
-				c->val[_AI_EFFECTIMAGELAND] = NULL;
-		}
+	}
 #ifdef _APPFW_FEATURE_CHANGEABLE_COLOR
-		r = pkgmgrinfo_appinfo_get_effectimage_type(handle, &effectimg_type);
-		c->val[_AI_EFFECTTYPE] = strdup(effectimg_type);
+	r = pkgmgrinfo_appinfo_get_effectimage_type(handle, &effectimg_type);
+	c->val[_AI_EFFECTTYPE] = strdup(effectimg_type);
 #endif
 
 #ifdef _APPFW_FEATURE_PROCESS_POOL
-		r = pkgmgrinfo_appinfo_is_process_pool(handle, &process_pool);
-		if (process_pool == false) {
-			c->val[_AI_POOL] = strdup("false");
-		} else {
-			c->val[_AI_POOL] = strdup("true");
-		}
+	r = pkgmgrinfo_appinfo_is_process_pool(handle, &process_pool);
+	if (process_pool == false) {
+		c->val[_AI_POOL] = strdup("false");
+	} else {
+		c->val[_AI_POOL] = strdup("true");
+	}
 #endif
-		r = pkgmgrinfo_appinfo_get_component_type(handle, &component_type);
-		c->val[_AI_COMPTYPE] = strdup(component_type);
+	r = pkgmgrinfo_appinfo_get_component_type(handle, &component_type);
+	c->val[_AI_COMPTYPE] = strdup(component_type);
 
-		r = pkgmgrinfo_appinfo_is_onboot(handle, &onboot);
-		if(onboot == true)
-			c->val[_AI_ONBOOT] = strdup("true");
-		else c->val[_AI_ONBOOT] = strdup("false");
+	r = pkgmgrinfo_appinfo_is_onboot(handle, &onboot);
+	if(onboot == true)
+		c->val[_AI_ONBOOT] = strdup("true");
+	else c->val[_AI_ONBOOT] = strdup("false");
 
-		r = pkgmgrinfo_appinfo_is_autorestart(handle, &restart);
-		if(restart == true)
-			c->val[_AI_RESTART] = strdup("true");
-		else c->val[_AI_RESTART] = strdup("false");
+	r = pkgmgrinfo_appinfo_is_autorestart(handle, &restart);
+	if(restart == true)
+		c->val[_AI_RESTART] = strdup("true");
+	else c->val[_AI_RESTART] = strdup("false");
 
 #ifdef _APPFW_FEATURE_MULTI_INSTANCE
-		r = pkgmgrinfo_appinfo_is_multi_instance(handle, &multi_instance);
-		if(multi_instance == true)
-			c->val[_AI_MULTI_INSTANCE] = strdup("true");
-		else
-			c->val[_AI_MULTI_INSTANCE] = strdup("false");
+	r = pkgmgrinfo_appinfo_is_multi_instance(handle, &multi_instance);
+	if(multi_instance == true)
+		c->val[_AI_MULTI_INSTANCE] = strdup("true");
+	else
+		c->val[_AI_MULTI_INSTANCE] = strdup("false");
 
-		r = pkgmgrinfo_appinfo_get_multi_instance_mainid(handle, &multi_mainid);
-		c->val[_AI_MULTI_INSTANCE_MAINID] = strdup(multi_mainid);
+	r = pkgmgrinfo_appinfo_get_multi_instance_mainid(handle, &multi_mainid);
+	c->val[_AI_MULTI_INSTANCE_MAINID] = strdup(multi_mainid);
 
-		// Toggle order
-		c->val[_AI_TOGGLE_ORDER] = strdup("0");
+	// Toggle order
+	c->val[_AI_TOGGLE_ORDER] = strdup("0");
 #endif
-#ifdef _APPFW_FEATURE_MULTI_WINDOW
-		r = pkgmgrinfo_appinfo_is_multi_window(handle, &multi_window);
-		if((r == PMINFO_R_OK) && (multi_window == true))
-			c->val[_AI_MULTI_WINDOW] = strdup("true");
-		else
-			c->val[_AI_MULTI_WINDOW] = strdup("false");
-#endif
-	} else {
-		c->val[_AI_COMP] = strdup("svc");
-
-		r = pkgmgrinfo_appinfo_is_onboot(handle, &onboot);
-		if(onboot == true)
-			c->val[_AI_ONBOOT] = strdup("true");
-		else c->val[_AI_ONBOOT] = strdup("false");
-
-		r = pkgmgrinfo_appinfo_is_autorestart(handle, &restart);
-		if(restart == true)
-			c->val[_AI_RESTART] = strdup("true");
-		else c->val[_AI_RESTART] = strdup("false");
-	}
 
 	r = pkgmgrinfo_appinfo_get_exec(handle, &exec);
 	c->val[_AI_EXEC] = strdup(exec);
@@ -379,35 +410,106 @@ static int __app_info_insert_handler (const pkgmgrinfo_appinfo_h handle, void *d
 		c->val[_AI_UPS] = strdup("false");
 	}
 #endif
+#ifdef _APPFW_FEATURE_COOLDOWN_MODE_SUPPORT
+	if(support_mode & PMINFO_SUPPORT_MODE_COOL_DOWN) {
+		c->val[_AI_COOLDOWN] = strdup("true");
+	} else {
+		c->val[_AI_COOLDOWN] = strdup("false");
+	}
+#endif
 
 	r = pkgmgrinfo_appinfo_get_pkgid(handle, &pkgid);
 	c->val[_AI_PKGID] = strdup(pkgid);
 
 	c->val[_AI_STATUS] = strdup("installed");
 
-	SECURE_LOGD("appinfo file:%s, comp:%s, type:%s", c->val[_AI_FILE], c->val[_AI_COMP], c->val[_AI_TYPE]);
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+
+	ret = pkgmgrinfo_appinfo_get_tep_name(handle, &tep_name);
+	if(ret == PMINFO_R_OK) {
+		c->val[_AI_TEP] = strdup(tep_name);
+	}
+
+	ret = pkgmgrinfo_appinfo_get_installed_storage_location(handle, &installed_storage);
+	if(ret == PMINFO_R_OK) {
+		if(installed_storage == PMINFO_INTERNAL_STORAGE)
+		{
+			c->val[_AI_STORAGE_TYPE] = strdup("internal");
+		}
+		else if(installed_storage == PMINFO_EXTERNAL_STORAGE)
+		{
+			c->val[_AI_STORAGE_TYPE] = strdup("external");
+		}
+	}
+#endif
+
+#ifdef _APPFW_FEATURE_EFFECTIVE_APPID
+	ret = pkgmgrinfo_appinfo_get_effective_appid(handle, &effective_appid);
+	if (ret == PMINFO_R_OK) {
+		if (effective_appid && strlen(effective_appid) > 0)
+			c->val[_AI_EFFECTIVE_APPID] = strdup(effective_appid);
+	}
+#endif
+
+	ret = pkgmgrinfo_appinfo_get_api_version(handle, &api_ver);
+	if (ret != PMINFO_R_OK) {
+		_E("Failed to get api version");
+		_free_appinfo(c);
+		return -1;
+	}
+
+	if (api_ver)
+		c->val[_AI_API_VER] = strdup(api_ver);
+	else
+		c->val[_AI_API_VER] = strdup("NONE");
+
+	ret = pkgmgrinfo_appinfo_get_launch_mode(handle, &mode);
+	if (ret == PMINFO_R_OK && mode)
+		c->val[_AI_LAUNCH_MODE] = strdup(mode);
+	else
+		c->val[_AI_LAUNCH_MODE] = strdup("single");
+
+	/* TODO each background category may have different background management policies,
+	 * 	so should have real background category value than allowed_background. 	*/
+	pkgmgrinfo_appinfo_foreach_background_category(handle, __set_allowed_bg, &allowed_bg);
+	if (ret != PMINFO_R_OK) {
+		_E("Failed to check allowed background");
+	}
+
+	if (allowed_bg) {
+		SECURE_LOGD("[__SUSPEND__] allowed background, appid: %s", appid);
+		c->val[_AI_ALLOWED_BG] = strdup("ALLOWED_BG");
+	} else {
+		c->val[_AI_ALLOWED_BG] = strdup("NONE");
+	}
+#ifdef _APPFW_FEATURE_PRIVATE_SERVICE
+	c->val[_AI_VISIBILITY] = NULL;
+#endif
+	SECURE_LOGD("appinfo file:%s, type:%s", c->val[_AI_FILE], c->val[_AI_TYPE]);
 
 	g_hash_table_insert(cf->tbl, c->val[_AI_FILE], c);
 
 	return 0;
 }
 
-static int __app_info_delete_handler (const pkgmgrinfo_appinfo_h handle, void *data)
+static int __app_info_delete_handler(const pkgmgrinfo_appinfo_h handle, void *data)
 {
 	struct appinfomgr *cf = (struct appinfomgr *)data;
-	char *appid;
+	char *appid = NULL;
 
 	pkgmgrinfo_appinfo_get_appid(handle, &appid);
 
-	g_hash_table_remove(cf->tbl, appid);
+	if (appid)
+		g_hash_table_remove(cf->tbl, appid);
 
 	return 0;
 }
 
 static int _read_pkg_info(struct appinfomgr *cf)
 {
-	int ret = pkgmgrinfo_appinfo_get_install_list(__app_info_insert_handler, cf);
+	int ret;
 
+	ret = pkgmgrinfo_appinfo_get_install_list(__app_info_insert_handler, cf);
 	assert(ret == PMINFO_R_OK);
 
 	return ret;
@@ -431,7 +533,7 @@ static struct appinfomgr *_init()
 	return cf;
 }
 
-static gboolean __amd_pkgmgrinfo_start_handler (gpointer key, gpointer value, gpointer user_data)
+static void __amd_pkgmgrinfo_start_handler (gpointer key, gpointer value, gpointer user_data)
 {
 	struct appinfo *c = value;
 	char *pkgid = (char *)user_data;
@@ -441,10 +543,9 @@ static gboolean __amd_pkgmgrinfo_start_handler (gpointer key, gpointer value, gp
 		c->val[_AI_STATUS] = strdup("blocking");
 		SECURE_LOGD("pkgmgr working for this application(%s)", c->val[_AI_NAME]);
 	}
-	return TRUE;
 }
 
-static gboolean __amd_pkgmgrinfo_fail_handler (gpointer key, gpointer value, gpointer user_data)
+static void __amd_pkgmgrinfo_fail_handler (gpointer key, gpointer value, gpointer user_data)
 {
 	struct appinfo *c = value;
 	char *pkgid = (char *)user_data;
@@ -454,7 +555,6 @@ static gboolean __amd_pkgmgrinfo_fail_handler (gpointer key, gpointer value, gpo
 		c->val[_AI_STATUS] = strdup("installed");
 		SECURE_LOGD("pkgmgr fail(%s)", c->val[_AI_NAME]);
 	}
-	return TRUE;
 }
 
 static int __amd_pkgmgrinfo_install_end_handler(pkgmgrinfo_appinfo_h handle, void *user_data)
@@ -475,8 +575,8 @@ static int __amd_pkgmgrinfo_install_end_handler(pkgmgrinfo_appinfo_h handle, voi
 
 	if (r == 1 && componet && strncmp(componet, "svcapp", 6) == 0)
 	{
-		_D("start service - %s", appid);
-		_start_srv(c, NULL);
+		SECURE_LOGW("start service - %s", appid);
+		_start_srv(c);
 	}
 
 	return 0;
@@ -495,7 +595,7 @@ static int __amd_pkgmgrinfo_update_end_handler(pkgmgrinfo_appinfo_h handle, void
 
 	if (c != NULL && strncmp(c->val[_AI_STATUS], "restart", 7) == 0) {
 		__app_info_insert_handler(handle, user_data);
-		__release_srv(appid);
+		_release_srv(appid);
 	} else {
 		__app_info_insert_handler(handle, user_data);
 		c = g_hash_table_lookup(cf->tbl, appid);
@@ -505,8 +605,8 @@ static int __amd_pkgmgrinfo_update_end_handler(pkgmgrinfo_appinfo_h handle, void
 
 		if (r == 1 && componet && strncmp(componet, "svcapp", 6) == 0)
 		{
-			_D("start service - %s", appid);
-			_start_srv(c, NULL);
+			SECURE_LOGW("start service - %s", appid);
+			_start_srv(c);
 		}
 	}
 
@@ -561,7 +661,7 @@ static int __amd_pkgmgrinfo_status_cb(int req_id, const char *pkg_type,
 		p = g_hash_table_lookup(pkg_tbl, pkgid);
 		if(p) {
 			op = p->op;
-			SECURE_LOGD("op(%s), value(%s)", op, val);
+			SECURE_LOGW("op(%s), value(%s)", op, val);
 			if (strncmp(val, "ok", 2) == 0) {
 				if (op && strncmp(op, "install", 7)== 0) {
 					ret = pkgmgrinfo_pkginfo_get_pkginfo(pkgid, &handle);
@@ -609,48 +709,50 @@ static int __amd_pkgmgrinfo_status_cb(int req_id, const char *pkg_type,
 
 static int __unmounted_list_cb(const pkgmgrinfo_appinfo_h handle, void *user_data)
 {
-	char *appid;
+	char *appid = NULL;
 	struct appinfomgr *cf = (struct appinfomgr *)user_data;
-	struct appinfo *c;
+	struct appinfo *c = NULL;
 
 	pkgmgrinfo_appinfo_get_appid(handle, &appid);
-	c = g_hash_table_lookup(cf->tbl, appid);
-	if (c == NULL)
-		return -1;
-
-	SECURE_LOGD("%s : %s", c->val[_AI_FILE], c->val[_AI_STATUS]);
-	free(c->val[_AI_STATUS]);
-	c->val[_AI_STATUS] = strdup("unmounted");
-	SECURE_LOGD("unmounted(%s)", appid);
+	if (appid) {
+		c = g_hash_table_lookup(cf->tbl, appid);
+		SECURE_LOGD("%s : %s", c->val[_AI_FILE], c->val[_AI_STATUS]);
+		free(c->val[_AI_STATUS]);
+		c->val[_AI_STATUS] = strdup("unmounted");
+		SECURE_LOGD("unmounted(%s)", appid);
+	} else {
+		_E("pkgmgrinfo_appinfo_get_appid() failed");
+	}
 
 	return 0;
 }
 
 static int __mounted_list_cb(const pkgmgrinfo_appinfo_h handle, void *user_data)
 {
-	char *appid;
+	char *appid = NULL;
 	struct appinfomgr *cf = (struct appinfomgr *)user_data;
-	struct appinfo *c;
+	struct appinfo *c = NULL;
 
 	pkgmgrinfo_appinfo_get_appid(handle, &appid);
-	c = g_hash_table_lookup(cf->tbl, appid);
-	if (c == NULL)
-		return -1;
-
-	SECURE_LOGD("%s : %s", c->val[_AI_FILE], c->val[_AI_STATUS]);
-	if(strncmp(c->val[_AI_STATUS], "unmounted", 9) ==0 ) {
-		free(c->val[_AI_STATUS]);
-		c->val[_AI_STATUS] = strdup("installed");
+	if (appid) {
+		c = g_hash_table_lookup(cf->tbl, appid);
+		SECURE_LOGD("%s : %s", c->val[_AI_FILE], c->val[_AI_STATUS]);
+		if(strncmp(c->val[_AI_STATUS], "unmounted", 9) ==0 ) {
+			free(c->val[_AI_STATUS]);
+			c->val[_AI_STATUS] = strdup("installed");
+		}
+		SECURE_LOGD("mounted(%s)", appid);
+	} else {
+		_E("pkgmgrinfo_appinfo_get_appid() failed");
 	}
-	SECURE_LOGD("mounted(%s)", appid);
 
 	return 0;
 }
 
+#ifdef _APPFW_FEATURE_MMC_SUPPORT
 static void __amd_mmc_vconf_cb(keynode_t *key, void *data)
 {
 	int status;
-	struct appinfomgr *cf = (struct appinfomgr *)data;
 	int ret = 0;
 
 	status = vconf_keynode_get_int(key);
@@ -670,11 +772,13 @@ static void __amd_mmc_vconf_cb(keynode_t *key, void *data)
 		}
 	}
 }
+#endif
 
 int appinfo_init(struct appinfomgr **cf)
 {
 	struct appinfomgr *_cf;
 	int r;
+	char *cmdline;
 	FILE *fp = NULL;
 	char buf[4096] = {0,};
 	char *tmp = NULL;
@@ -690,10 +794,12 @@ int appinfo_init(struct appinfomgr **cf)
 		_E("appinfo init failed: %s", strerror(errno));
 		return -1;
 	}
-	r = fgets(buf, sizeof(buf), fp);
-	tmp = strstr(buf, "gles");
-	if(tmp != NULL) {
-		sscanf(tmp,"gles=%d", &gles);
+	cmdline = fgets(buf, sizeof(buf), fp);
+	if (cmdline != NULL) {
+		tmp = strstr(buf, "gles");
+		if(tmp != NULL) {
+			sscanf(tmp,"gles=%d", &gles);
+		}
 	}
 	fclose(fp);
 
@@ -709,9 +815,11 @@ int appinfo_init(struct appinfomgr **cf)
 		return -1;
 	}
 
+#ifdef _APPFW_FEATURE_MMC_SUPPORT
 	r = vconf_notify_key_changed(VCONFKEY_SYSMAN_MMC_STATUS, __amd_mmc_vconf_cb, _cf);
 	if (r < 0)
 		_E("Unable to register vconf notification callback for VCONFKEY_SYSMAN_MMC_STATUS\n");
+#endif
 
 	int event_type = PMINFO_CLIENT_STATUS_UPGRADE | PMINFO_CLIENT_STATUS_UNINSTALL | PMINFO_CLIENT_STATUS_INSTALL;
 	pkgmgrinfo_client *pc = NULL;
@@ -733,7 +841,7 @@ void appinfo_fini(struct appinfomgr **cf)
 	*cf = NULL;
 }
 
-const struct appinfo *appinfo_insert(struct appinfomgr *cf, const char *pkg_name)
+const struct appinfomgr *appinfo_insert(struct appinfomgr *cf, const char *pkg_name)
 {
 	pkgmgrinfo_pkginfo_h handle;
 	if (pkgmgrinfo_pkginfo_get_pkginfo(pkg_name, &handle) == PMINFO_R_OK){
@@ -788,6 +896,10 @@ const char *appinfo_get_value(const struct appinfo *c, enum appinfo_type type)
 const char *appinfo_set_value(struct appinfo *c, enum appinfo_type type, const char* val)
 {
 	enum _appinfo_idx i;
+	if (!c) {
+		SECURE_LOGE("appinfo is NULL, type: %d, val: %s", type, val);
+		return NULL;
+	}
 	for (i = _AI_START; i < sizeof(_appinfos)/sizeof(_appinfos[0]); i++) {
 		if (type == _appinfos[i].type) {
 			SECURE_LOGD("%s : %s : %s", c->val[_AI_FILE], c->val[i], val);

@@ -19,8 +19,9 @@
  *
  */
 
-
+#define _GNU_SOURCE
 #include <stdio.h>
+#include <dbus/dbus-glib-lowlevel.h>
 
 #include "app_signal.h"
 #include "aul_api.h"
@@ -43,13 +44,11 @@ static void *_status_data;
 static int (*_cooldown_handler) (const char *cooldown_status, void *data);
 static void *_cooldown_data;
 
-#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
-static int (*_lcd_status_handler) (const char *lcd_status, void *data);
-static void *_lcd_status_data;
-#endif
-
 static DBusConnection *bus;
 static int app_dbus_signal_handler_initialized = 0;
+
+DBusError err;
+DBusConnection* conn = NULL;
 
 static DBusHandlerResult
 __app_dbus_signal_filter(DBusConnection *conn, DBusMessage *message,
@@ -125,36 +124,11 @@ __app_dbus_signal_filter(DBusConnection *conn, DBusMessage *message,
 		if (_cooldown_handler)
 			_cooldown_handler(cooldown_status, _cooldown_data);
 	}
-#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
-	else if (dbus_message_is_signal(
-	  message, interface, DEVICED_SIGNAL_LCD_ON)) {
-		if (_lcd_status_handler)
-			_lcd_status_handler(DEVICED_SIGNAL_LCD_ON, _lcd_status_data);
-	} else if (dbus_message_is_signal(
-	  message, interface, DEVICED_SIGNAL_LCD_OFF)) {
-		if (_lcd_status_handler)
-			_lcd_status_handler(DEVICED_SIGNAL_LCD_OFF, _lcd_status_data);
-	}
-#endif
 
 	return DBUS_HANDLER_RESULT_HANDLED;
 }
 
-int __app_dbus_signal_handler_init(void)
-{
-	int ret = 0;
-
-	if (app_dbus_signal_handler_initialized)
-		return 0;
-
-	ret = __app_dbus_signal_handler_init_with_param(AUL_DBUS_PATH, AUL_DBUS_SIGNAL_INTERFACE);
-
-	app_dbus_signal_handler_initialized = 1;
-
-	return ret;
-}
-
-int __app_dbus_signal_handler_init_with_param(const char* path, const char* interface)
+static int __app_dbus_signal_handler_init_with_param(const char* path, const char* interface)
 {
 	DBusError error;
 	char rule[MAX_LOCAL_BUFSZ];
@@ -178,7 +152,7 @@ int __app_dbus_signal_handler_init_with_param(const char* path, const char* inte
 		return -1;
 	}
 
-	if (dbus_connection_add_filter(bus, 
+	if (dbus_connection_add_filter(bus,
 		__app_dbus_signal_filter, NULL, NULL) == FALSE) {
 		_E("add filter fail");
 		return -1;
@@ -189,21 +163,21 @@ int __app_dbus_signal_handler_init_with_param(const char* path, const char* inte
 	return 0;
 }
 
-int __app_dbus_signal_handler_fini(void)
+static int __app_dbus_signal_handler_init(void)
 {
 	int ret = 0;
 
-	if (!app_dbus_signal_handler_initialized)
+	if (app_dbus_signal_handler_initialized)
 		return 0;
 
-	ret = __app_dbus_signal_handler_fini_with_param(AUL_DBUS_PATH, AUL_DBUS_SIGNAL_INTERFACE);
+	ret = __app_dbus_signal_handler_init_with_param(AUL_DBUS_PATH, AUL_DBUS_SIGNAL_INTERFACE);
 
-	app_dbus_signal_handler_initialized = 0;
+	app_dbus_signal_handler_initialized = 1;
 
 	return ret;
 }
 
-int __app_dbus_signal_handler_fini_with_param(const char* path, const char* interface)
+static int __app_dbus_signal_handler_fini_with_param(const char* path, const char* interface)
 {
 	DBusError error;
 	char rule[MAX_LOCAL_BUFSZ];
@@ -228,6 +202,20 @@ int __app_dbus_signal_handler_fini_with_param(const char* path, const char* inte
 	_D("app signal finialized");
 
 	return 0;
+}
+
+static int __app_dbus_signal_handler_fini(void)
+{
+	int ret = 0;
+
+	if (!app_dbus_signal_handler_initialized)
+		return 0;
+
+	ret = __app_dbus_signal_handler_fini_with_param(AUL_DBUS_PATH, AUL_DBUS_SIGNAL_INTERFACE);
+
+	app_dbus_signal_handler_initialized = 0;
+
+	return ret;
 }
 
 SLPAPI int aul_listen_app_dead_signal(int (*func) (int, void *), void *data)
@@ -322,22 +310,6 @@ SLPAPI int aul_listen_e17_status_signal(int (*func) (int, int, void *), void *da
 	return AUL_R_OK;
 }
 
-#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
-SLPAPI int aul_listen_lcd_status_signal(int (*func) (const char *, void *), void *data)
-{
-	if (func) {
-		if (__app_dbus_signal_handler_init_with_param(DEVICED_PATH_DISPLAY, DEVICED_INTERFACE_DISPLAY) < 0) {
-			_E("error app signal init");
-			return AUL_R_ERROR;
-		}
-	}
-	_lcd_status_handler = func;
-	_lcd_status_data = data;
-
-	return AUL_R_OK;
-}
-#endif
-
 SLPAPI int aul_update_freezer_status(int pid, const char* type)
 {
 	DBusError err;
@@ -348,6 +320,8 @@ SLPAPI int aul_update_freezer_status(int pid, const char* type)
 	int ret = -1;
 
 	dbus_error_init(&err);
+
+	_W("send_update_freezer_status, pid: %d, type: %s", pid, type);
 
 	conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
 	if (!conn) {
@@ -372,8 +346,6 @@ SLPAPI int aul_update_freezer_status(int pid, const char* type)
 		ret = -1;
 	}
 
-	_D("Send a freezer signal pid: %d, type: %s", pid, type);
-
 	if (!dbus_connection_send(conn, msg, &serial)) {
 		_E("Failed to send a D-Bus Message.");
 		ret = -1;
@@ -396,3 +368,329 @@ end:
 
 }
 
+int __app_status_dbus_init(void)
+{
+	int ret = 0;
+
+	if (conn)
+		return 0;
+
+	dbus_error_init(&err);
+	conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
+
+	return ret;
+}
+
+SLPAPI int aul_send_app_launch_request_signal(int pid, const char* appid, const char* pkgid, const char* type)
+{
+	DBusMessage* msg = NULL;
+	dbus_uint32_t serial = 0;
+
+	int ret = -1;
+
+	__app_status_dbus_init();
+
+	_W("send_app_launch_signal, pid: %d, appid: %s", pid, appid);
+
+	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
+			AUL_APP_STATUS_DBUS_SIGNAL_INTERFACE,
+			AUL_APP_STATUS_DBUS_LAUNCH_REQUEST);
+	if (!msg) {
+		_E("Could not create DBus Message.");
+		ret = -1;
+		goto end;
+	}
+
+	if (!dbus_message_append_args(msg,
+			DBUS_TYPE_INT32, &pid,
+			DBUS_TYPE_STRING, &appid,
+			DBUS_TYPE_STRING, &pkgid,
+			DBUS_TYPE_STRING, &type,
+			DBUS_TYPE_INVALID)) {
+		_E("Failed to append a D-Bus Message.");
+		ret = -1;
+	}
+
+	if (!dbus_connection_send(conn, msg, &serial)) {
+		_E("Failed to send a D-Bus Message.");
+		ret = -1;
+	}
+
+	dbus_connection_flush(conn);
+
+end:
+	if (msg) {
+		dbus_message_unref(msg);
+	}
+	return ret;
+}
+
+SLPAPI int aul_send_app_resume_request_signal(int pid, const char* appid, const char* pkgid, const char* type)
+{
+	DBusMessage* msg = NULL;
+	dbus_uint32_t serial = 0;
+	const char	 *empty_string = "";
+
+	int ret = -1;
+
+	__app_status_dbus_init();
+
+	_W("send_app_resume_signal, pid: %d, appid: %s", pid, appid);
+
+	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
+			AUL_APP_STATUS_DBUS_SIGNAL_INTERFACE,
+			AUL_APP_STATUS_DBUS_RESUME_REQUEST);
+	if (!msg) {
+		_E("Could not create DBus Message.");
+		ret = -1;
+		goto end;
+	}
+
+	if(appid) {
+		if (!dbus_message_append_args(msg,
+				DBUS_TYPE_INT32, &pid,
+				DBUS_TYPE_STRING, &appid,
+				DBUS_TYPE_STRING, &pkgid,
+				DBUS_TYPE_STRING, &type,
+				DBUS_TYPE_INVALID)) {
+			_E("Failed to append a D-Bus Message.");
+			ret = -1;
+		}
+	} else {
+		if (!dbus_message_append_args(msg,
+				DBUS_TYPE_INT32, &pid,
+				DBUS_TYPE_STRING, &empty_string,
+				DBUS_TYPE_STRING, &empty_string,
+				DBUS_TYPE_STRING, &empty_string,
+				DBUS_TYPE_INVALID)) {
+			_E("Failed to append a D-Bus Message.");
+			ret = -1;
+		}
+	}
+
+	if (!dbus_connection_send(conn, msg, &serial)) {
+		_E("Failed to send a D-Bus Message.");
+		ret = -1;
+	}
+
+	dbus_connection_flush(conn);
+
+end:
+	if (msg) {
+		dbus_message_unref(msg);
+	}
+
+	return ret;
+}
+
+SLPAPI int aul_send_app_terminate_request_signal(int pid, const char* appid, const char* pkgid, const char *type)
+{
+	DBusMessage* msg = NULL;
+	dbus_uint32_t serial = 0;
+	const char	 *empty_string = "";
+
+	int ret = -1;
+
+	__app_status_dbus_init();
+
+	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
+			AUL_APP_STATUS_DBUS_SIGNAL_INTERFACE,
+			AUL_APP_STATUS_DBUS_TERMINATE_REQUEST);
+	if (!msg) {
+		_E("Could not create DBus Message.");
+		ret = -1;
+		goto end;
+	}
+
+	if(appid) {
+		if (!dbus_message_append_args(msg,
+				DBUS_TYPE_INT32, &pid,
+				DBUS_TYPE_STRING, &appid,
+				DBUS_TYPE_STRING, &pkgid,
+				DBUS_TYPE_STRING, &type,
+				DBUS_TYPE_INVALID)) {
+			_E("Failed to append a D-Bus Message.");
+			ret = -1;
+		}
+	} else {
+		if (!dbus_message_append_args(msg,
+				DBUS_TYPE_INT32, &pid,
+				DBUS_TYPE_STRING, &empty_string,
+				DBUS_TYPE_STRING, &empty_string,
+				DBUS_TYPE_STRING, &empty_string,
+				DBUS_TYPE_INVALID)) {
+			_E("Failed to append a D-Bus Message.");
+			ret = -1;
+		}
+	}
+
+	if (!dbus_connection_send(conn, msg, &serial)) {
+		_E("Failed to send a D-Bus Message.");
+		ret = -1;
+	}
+
+	dbus_connection_flush(conn);
+
+end:
+	if (msg) {
+		dbus_message_unref(msg);
+	}
+
+	return ret;
+
+}
+
+SLPAPI int aul_send_app_status_change_signal(int pid, const char* appid, const char* pkgid, const char* status, const char *type)
+{
+	DBusMessage* msg = NULL;
+	dbus_uint32_t serial = 0;
+	const char	 *empty_string = "";
+
+	int ret = -1;
+
+	_W("send_app_status_change_signal, pid: %d, appid: %s, status: %s", pid, appid, status);
+
+	__app_status_dbus_init();
+
+	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
+			AUL_APP_STATUS_DBUS_SIGNAL_INTERFACE,
+			AUL_APP_STATUS_DBUS_STATUS_CHANGE);
+	if (!msg) {
+		_E("Could not create DBus Message.");
+		ret = -1;
+		goto end;
+	}
+
+	if(appid) {
+		if (!dbus_message_append_args(msg,
+				DBUS_TYPE_INT32, &pid,
+				DBUS_TYPE_STRING, &appid,
+				DBUS_TYPE_STRING, &pkgid,
+				DBUS_TYPE_STRING, &status,
+				DBUS_TYPE_STRING, &type,
+				DBUS_TYPE_INVALID)) {
+			_E("Failed to append a D-Bus Message.");
+			ret = -1;
+		}
+	} else {
+		if (!dbus_message_append_args(msg,
+				DBUS_TYPE_INT32, &pid,
+				DBUS_TYPE_STRING, &empty_string,
+				DBUS_TYPE_STRING, &empty_string,
+				DBUS_TYPE_STRING, &status,
+				DBUS_TYPE_STRING, &type,
+				DBUS_TYPE_INVALID)) {
+			_E("Failed to append a D-Bus Message.");
+			ret = -1;
+		}
+	}
+
+	if (!dbus_connection_send(conn, msg, &serial)) {
+		_E("Failed to send a D-Bus Message.");
+		ret = -1;
+	}
+
+	dbus_connection_flush(conn);
+
+end:
+	if (msg) {
+		dbus_message_unref(msg);
+	}
+
+	return ret;
+}
+
+SLPAPI int aul_send_app_terminated_signal(int pid)
+{
+	DBusMessage* msg = NULL;
+	dbus_uint32_t serial = 0;
+
+	int ret = -1;
+
+	__app_status_dbus_init();
+
+	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
+			AUL_APP_STATUS_DBUS_SIGNAL_INTERFACE,
+			AUL_APP_STATUS_DBUS_TERMINATED);
+	if (!msg) {
+		_E("Could not create DBus Message.");
+		ret = -1;
+		goto end;
+	}
+
+	if (!dbus_message_append_args(msg,
+			DBUS_TYPE_INT32, &pid,
+			DBUS_TYPE_INVALID)) {
+		_E("Failed to append a D-Bus Message.");
+		ret = -1;
+	}
+
+	if (!dbus_connection_send(conn, msg, &serial)) {
+		_E("Failed to send a D-Bus Message.");
+		ret = -1;
+	}
+
+	dbus_connection_flush(conn);
+
+end:
+	if (msg) {
+		dbus_message_unref(msg);
+	}
+	return ret;
+}
+
+SLPAPI int aul_send_app_group_signal(int owner_pid, int child_pid, const char *child_pkgid)
+{
+	DBusMessage* msg = NULL;
+	dbus_uint32_t serial = 0;
+	const char  *empty_string = "";
+
+	int ret = -1;
+
+	_W("send_app_group_signal, owner: %d, child: %d", owner_pid, child_pid);
+
+	__app_status_dbus_init();
+
+	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
+	                              AUL_APP_STATUS_DBUS_SIGNAL_INTERFACE,
+	                              AUL_APP_STATUS_DBUS_GROUP);
+	if (!msg) {
+		_E("Could not create DBus Message.");
+		ret = -1;
+		goto end;
+	}
+
+	if (child_pkgid) {
+		if (!dbus_message_append_args(msg,
+		                              DBUS_TYPE_INT32, &owner_pid,
+		                              DBUS_TYPE_INT32, &child_pid,
+		                              DBUS_TYPE_STRING, &child_pkgid,
+		                              DBUS_TYPE_INVALID)) {
+			_E("Failed to append a D-Bus Message.");
+			ret = -1;
+		}
+	} else {
+		if (!dbus_message_append_args(msg,
+		                              DBUS_TYPE_INT32, &owner_pid,
+		                              DBUS_TYPE_INT32, &child_pid,
+		                              DBUS_TYPE_STRING, &empty_string,
+		                              DBUS_TYPE_INVALID)) {
+			_E("Failed to append a D-Bus Message.");
+			ret = -1;
+		}
+	}
+
+	if (!dbus_connection_send(conn, msg, &serial)) {
+		_E("Failed to send a D-Bus Message.");
+		ret = -1;
+	}
+
+	dbus_connection_flush(conn);
+
+end:
+	if (msg) {
+		dbus_message_unref(msg);
+	}
+
+	return ret;
+}

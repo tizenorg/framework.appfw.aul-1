@@ -24,6 +24,7 @@
  * simple AUL daemon - launchpad
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <dlfcn.h>
@@ -38,6 +39,8 @@
 #include <sys/prctl.h>
 #include <malloc.h>
 #include <sys/resource.h>
+#include <ttrace.h>
+#include <bundle_internal.h>
 
 #include "app_sock.h"
 #include "aul.h"
@@ -62,7 +65,7 @@
 #include <sqlite3.h>
 
 #define _static_ static inline
-#define POLLFD_MAX 1
+#define POLLFD_MAX 2
 #define SQLITE_FLUSH_MAX	(1048576)	/* (1024*1024) */
 #define AUL_POLL_CNT		15
 #define AUL_PR_NAME			16
@@ -90,11 +93,10 @@ _static_ int __term_app(int pid);
 _static_ int __resume_app(int pid);
 _static_ int __real_send(int clifd, int ret);
 _static_ void __send_result_to_caller(int clifd, int ret);
-_static_ void __launchpad_main_loop(int main_fd);
+_static_ void __launchpad_main_loop(int main_fd, int sigchld_fd);
 _static_ int __launchpad_pre_init(int argc, char **argv);
 _static_ int __launchpad_post_init();
 
-extern ail_error_e ail_db_close(void);
 
 
 
@@ -607,7 +609,7 @@ static void __release_appid_at_exit(void)
 	}
 }
 
-_static_ void __launchpad_main_loop(int main_fd)
+_static_ void __launchpad_main_loop(int main_fd, int sigchld_fd)
 {
 	bundle *kb = NULL;
 	app_pkt_t *pkt = NULL;
@@ -622,6 +624,7 @@ _static_ void __launchpad_main_loop(int main_fd)
 
 	char sock_path[UNIX_PATH_MAX] = {0,};
 
+	traceBegin(TTRACE_TAG_APPLICATION_MANAGER, "AUL:PAD:MAINLOOP");
 	pkt = __app_recv_raw(main_fd, &clifd, &cr);
 	if (!pkt) {
 		_D("packet is NULL");
@@ -669,7 +672,8 @@ _static_ void __launchpad_main_loop(int main_fd)
 
 			close(clifd);
 			close(main_fd);
-			__signal_unset_sigchld();
+			close(sigchld_fd);
+			__signal_unblock_sigchld();
 			__signal_fini();
 
 			snprintf(sock_path, UNIX_PATH_MAX, "%s/%d", AUL_SOCK_PREFIX, getpid());
@@ -686,6 +690,7 @@ _static_ void __launchpad_main_loop(int main_fd)
 					   menu_info, kb) < 0) {
 				SECURE_LOGE("preparing work fail to launch - "
 				   "can not launch %s\n", pkg_name);
+				traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 				exit(-1);
 			}
 
@@ -694,6 +699,7 @@ _static_ void __launchpad_main_loop(int main_fd)
 
 			__real_launch(app_path, kb);
 
+			traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 			exit(-1);
 		}
 		SECURE_LOGD("==> real launch pid : %d %s\n", pid, app_path);
@@ -704,12 +710,8 @@ _static_ void __launchpad_main_loop(int main_fd)
 	__send_result_to_caller(clifd, pid);
 
 	if (pid > 0) {
-		if (is_real_launch) {
-			/*TODO: retry*/
-			__signal_block_sigchld();
+		if (is_real_launch)
 			__send_app_launch_signal(pid);
-			__signal_unblock_sigchld();
-		}
 	}
 
 	if (menu_info != NULL)
@@ -726,6 +728,8 @@ _static_ void __launchpad_main_loop(int main_fd)
 		malloc_trim(0);
 		initialized = 1;
 	}
+
+	traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 
 }
 
@@ -769,9 +773,6 @@ _static_ int __launchpad_post_init()
 		return 0;
 	}
 
-	if (__signal_set_sigchld() < 0)
-		return -1;
-
 	initialized++;
 
 	return 0;
@@ -780,8 +781,8 @@ _static_ int __launchpad_post_init()
 int main(int argc, char **argv)
 {
 	int main_fd;
+	int sigchld_fd;
 	struct pollfd pfds[POLLFD_MAX];
-	int i;
 
 	/* init without concerning X & EFL*/
 	main_fd = __launchpad_pre_init(argc, argv);
@@ -793,6 +794,15 @@ int main(int argc, char **argv)
 	pfds[0].fd = main_fd;
 	pfds[0].events = POLLIN;
 	pfds[0].revents = 0;
+
+	sigchld_fd = __signal_get_sigchld_fd();
+	if (sigchld_fd == -1) {
+		_E("failed to get sigchld fd");
+		exit(-1);
+	}
+	pfds[1].fd = sigchld_fd;
+	pfds[1].events = POLLIN;
+	pfds[1].revents = 0;
 
 #ifdef _APPFW_FEATURE_PRIORITY_CHANGE
 	int res = setpriority(PRIO_PROCESS, 0, -12);
@@ -813,10 +823,25 @@ int main(int argc, char **argv)
 			exit(-1);
 		}
 
-		for (i = 0; i < POLLFD_MAX; i++) {
-			if ((pfds[i].revents & POLLIN) != 0) {
-				__launchpad_main_loop(pfds[i].fd);
-			}
+		if ((pfds[1].revents & POLLIN) != 0) {
+			struct signalfd_siginfo siginfo;
+			ssize_t s;
+
+			do {
+				s = read(pfds[1].fd, &siginfo, sizeof(struct signalfd_siginfo));
+				if (s == 0)
+					break;
+
+				if (s != sizeof(struct signalfd_siginfo)) {
+					_E("error reading sigchld info");
+					break;
+				}
+				__launchpad_process_sigchld(&siginfo);
+			} while (s > 0);
+		}
+
+		if ((pfds[0].revents & POLLIN) != 0) {
+			__launchpad_main_loop(pfds[0].fd, sigchld_fd);
 		}
 	}
 }

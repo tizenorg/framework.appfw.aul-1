@@ -19,6 +19,7 @@
  *
  */
 
+#define _GNU_SOURCE
 #include "aul.h"
 #include "aul_api.h"
 #include "miregex.h"
@@ -172,17 +173,25 @@ SLPAPI int aul_get_mime_icon(const char *mimetype, char *iconname, int len)
 SLPAPI int aul_get_mime_from_file(const char *filename, char *mimetype, int len)
 {
 	const char *mime;
-	struct stat 	statbuf;
+	struct stat statbuf;
+	char err_buf[128] = {0,};
+
 	if (filename == NULL)
 		return AUL_R_EINVAL;
 
 	if (access(filename, F_OK) != 0) {
-		_E("access fail(%s)", strerror(errno));
+		if (!strerror_r(errno, err_buf, sizeof(err_buf)))
+			_E("access fail(%s)", err_buf);
+		else
+			_E("access fail(%d)", errno);
 		return AUL_R_EINVAL;
 	}
 
-	if (stat(filename, &statbuf) != 0){
-		_E("Unable to get stat, error is %s", strerror(errno));
+	if (stat(filename, &statbuf) != 0) {
+		if (!strerror_r(errno, err_buf, sizeof(err_buf)))
+			_E("Unable to get stat, error is %s", err_buf);
+		else
+			_E("Unable to get stat, error is %d", errno);
 		return AUL_R_ERROR;
 	}
 	if(S_ISDIR(statbuf.st_mode))

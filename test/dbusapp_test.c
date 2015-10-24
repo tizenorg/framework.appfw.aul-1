@@ -19,12 +19,14 @@
  *
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <glib.h>
 #include "aul_dbus.h"
 #include "aul.h"
 #include <sys/time.h>
 #include <stdlib.h>
+#include <bundle_internal.h>
 
 #define MAX_LOCAL_BUFSZ 128
 
@@ -49,7 +51,9 @@ gboolean result_func(gpointer data)
 	dbus_message_append_args(reply, DBUS_TYPE_STRING,
 				 &str, DBUS_TYPE_INVALID);
 
-	dbus_connection_send(bus, reply, NULL);
+	if (dbus_connection_send(bus, reply, NULL) == FALSE)
+		_E("Failed to reply");
+
 	dbus_message_unref(reply);
 
 	return 0;
@@ -150,6 +154,8 @@ static int aul_handler(aul_type type, bundle *kb, void *data)
 	case AUL_TERMINATE:
 		exit(0);
 		break;
+	default:
+		break;
 	}
 	return 0;
 }
@@ -160,8 +166,11 @@ int main(int argc, char *argv[])
 
 	loop = g_main_loop_new(NULL, FALSE);
 
-	aul_launch_init(aul_handler, NULL);
-	aul_launch_argv_handler(argc, argv);
+	if (aul_launch_init(aul_handler, NULL) != AUL_R_OK)
+		return -1;
+
+	if (aul_launch_argv_handler(argc, argv) < 0)
+		return -1;
 
 	g_main_loop_run(loop);
 

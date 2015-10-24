@@ -19,9 +19,10 @@
  *
  */
 
-
+#define _GNU_SOURCE
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,7 +31,10 @@
 #include <glib.h>
 #ifdef _APPFW_FEATURE_APP_CONTROL_LITE
 #include <pkgmgr-info.h>
+#include <pkgmgrinfo_zone.h>
 #endif
+#include <ttrace.h>
+#include <bundle_internal.h>
 
 #include "aul.h"
 #include "aul_api.h"
@@ -40,6 +44,12 @@
 #include "launch.h"
 #include "key.h"
 #include "aul_util.h"
+#include "aul_zone.h"
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+#include <dbus/dbus.h>
+#include "app_signal.h"
+#define TEP_ISMOUNT_MAX_RETRY_CNT 20
+#endif
 
 static int aul_initialized = 0;
 static int aul_fd;
@@ -48,8 +58,6 @@ static int (*_aul_handler) (aul_type type, bundle *kb, void *data) = NULL;
 static void *_aul_data;
 
 
-
-static int __call_aul_handler(aul_type type, bundle *kb);
 static int app_resume();
 static int app_terminate();
 static void __clear_internal_key(bundle *kb);
@@ -70,12 +78,82 @@ static data_control_provider_handler_fn __dc_handler = NULL;
 
 extern  int aul_launch_fini();
 
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+SLPAPI int aul_is_tep_mount_dbus_done(const char *tep_string)
+{
+	DBusMessage *msg;
+	DBusMessage *reply;
+	DBusError err;
+	int ret = -1;
+	int r = -1;
+
+	DBusConnection *conn = dbus_bus_get(DBUS_BUS_SYSTEM, NULL);
+	if (!conn) {
+		_E("dbus_bus_get error");
+		return -EBADMSG;
+	}
+
+	msg = dbus_message_new_method_call(TEP_BUS_NAME, TEP_OBJECT_PATH, TEP_INTERFACE_NAME, TEP_IS_MOUNTED_METHOD);
+	if(!msg) {
+		_E("dbus_message_new_method_call(%s:%s-%s)", TEP_OBJECT_PATH, TEP_INTERFACE_NAME, TEP_IS_MOUNTED_METHOD);
+		return ret;
+	}
+
+	if (!dbus_message_append_args(msg,
+					DBUS_TYPE_STRING, &tep_string,
+					DBUS_TYPE_INVALID)) {
+		_E("Ran out of memory while constructing args\n");
+		dbus_message_unref(msg);
+		return ret;
+	}
+
+	dbus_error_init(&err);
+	reply = dbus_connection_send_with_reply_and_block(conn, msg, 500, &err);
+	if (!reply) {
+		_E("dbus_connection_send error(%s:%s)", err.name, err.message);
+		goto func_out;
+	}
+
+	r = dbus_message_get_args(reply, &err, DBUS_TYPE_INT32, &ret, DBUS_TYPE_INVALID);
+	if (!r) {
+		_E("no message : [%s:%s]", err.name, err.message);
+		goto func_out;
+	}
+
+func_out :
+	dbus_message_unref(msg);
+	dbus_error_free(&err);
+	return ret;
+}
+
+SLPAPI int aul_check_tep_mount(const char *tep_path)
+{
+	if(tep_path) {
+		int rv = -1;
+		int cnt = 0;
+		while(cnt < TEP_ISMOUNT_MAX_RETRY_CNT) {
+			rv = aul_is_tep_mount_dbus_done(tep_path);
+			if(rv == 1)
+				break;
+			usleep(50 * 1000);
+			cnt++;
+		}
+		/* incase after trying 1 sec, not getting mounted then quit */
+		if( rv != 1) {
+			_E("Not able to mount within 1 sec");
+			return -1;
+		}
+	}
+	return 0;
+}
+#endif
+
 int aul_is_initialized()
 {
 	return aul_initialized;
 }
 
-static int __call_aul_handler(aul_type type, bundle *kb)
+int __call_aul_handler(aul_type type, bundle *kb)
 {
 	if (_aul_handler)
 		_aul_handler(type, kb, _aul_data);
@@ -115,19 +193,31 @@ static int app_terminate()
 	return 0;
 }
 
-#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
-static int app_resume_lcd_on()
+static int bgapp_terminate()
 {
-	__call_aul_handler(AUL_RESUME_LCD_ON, NULL);
+	__call_aul_handler(AUL_TERMINATE_BGAPP, NULL);
 	return 0;
 }
 
-static int app_pause_lcd_off()
+static int app_pause()
 {
-	__call_aul_handler(AUL_PAUSE_LCD_OFF, NULL);
+	__call_aul_handler(AUL_PAUSE, NULL);
 	return 0;
 }
-#endif
+
+static int app_prepare_to_suspend()
+{
+	_D("[__SUSPEND__]");
+	__call_aul_handler(AUL_SUSPEND, NULL);
+	return 0;
+}
+
+static int app_prepare_to_wake()
+{
+	_D("[__WAKE__]");
+	__call_aul_handler(AUL_WAKE, NULL);
+	return 0;
+}
 
 /**
  * @brief	encode kb and send it to 'pid'
@@ -138,10 +228,13 @@ static int app_pause_lcd_off()
 SLPAPI int app_send_cmd(int pid, int cmd, bundle *kb)
 {
 	int datalen;
-	bundle_raw *kb_data;
-	int res;
+	bundle_raw *kb_data = NULL;
+	int res = AUL_R_OK;
 
-	bundle_encode(kb, &kb_data, &datalen);
+	res = bundle_encode(kb, &kb_data, &datalen);
+	if (res != BUNDLE_ERROR_NONE) {
+		return AUL_R_EINVAL;
+	}
 	if ((res = __app_send_raw(pid, cmd, kb_data, datalen)) < 0) {
 		switch (res) {
 		case -EINVAL:
@@ -173,6 +266,9 @@ SLPAPI int app_send_cmd(int pid, int cmd, bundle *kb)
 		case -EREJECTED:
 			res = AUL_R_EREJECTED;
 			break;
+		case -ENOAPP:
+			res = AUL_R_ENOAPP;
+			break;
 		default:
 			res = AUL_R_ERROR;
 		}
@@ -185,10 +281,13 @@ SLPAPI int app_send_cmd(int pid, int cmd, bundle *kb)
 SLPAPI int app_send_cmd_with_noreply(int pid, int cmd, bundle *kb)
 {
 	int datalen;
-	bundle_raw *kb_data;
-	int res;
+	bundle_raw *kb_data = NULL;
+	int res = AUL_R_OK;
 
-	bundle_encode(kb, &kb_data, &datalen);
+	res = bundle_encode(kb, &kb_data, &datalen);
+	if (res != BUNDLE_ERROR_NONE) {
+		return AUL_R_EINVAL;
+	}
 	if ((res = __app_send_raw_with_noreply(pid, cmd, kb_data, datalen)) < 0) {
 		switch (res) {
 		case -EINVAL:
@@ -269,6 +368,16 @@ static int __app_resume_local()
 	return 0;
 }
 
+static int __app_pause_local()
+{
+	if (!aul_is_initialized())
+		return AUL_R_ENOINIT;
+
+	app_pause();
+
+	return 0;
+}
+
 /**
  * @brief	start caller with kb
  * @return	callee's pid
@@ -278,19 +387,40 @@ int app_request_to_launchpad(int cmd, const char *pkgname, bundle *kb)
 	int must_free = 0;
 	int ret = 0;
 
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+	char oldZone[64] = { 0, };
+	pkgmgrinfo_pkginfo_set_zone(_cur_zone, oldZone, 64);
+#endif
+
+	traceBegin(TTRACE_TAG_APPLICATION_MANAGER, "AUL:REQ_TO_PAD");
 	SECURE_LOGD("launch request : %s", pkgname);
 	if (kb == NULL) {
 		kb = bundle_create();
+		if (kb == NULL)
+			return AUL_R_ERROR;
 		must_free = 1;
-	} else
+	} else {
 		__clear_internal_key(kb);
+	}
 
-	bundle_add(kb, AUL_K_PKG_NAME, pkgname);
+	ret = bundle_add(kb, AUL_K_PKG_NAME, pkgname);
+	if (ret != BUNDLE_ERROR_NONE) {
+		if (must_free)
+			bundle_free(kb);
+		return AUL_R_ERROR;
+	}
 	__set_stime(kb);
-	if(cmd == APP_START_ASYNC)
+
+	switch (cmd) {
+	case APP_START_ASYNC:
+	case APP_PAUSE:
+	case APP_PAUSE_BY_PID:
 		ret = app_send_cmd_with_noreply(AUL_UTIL_PID, cmd, kb);
-	else
+		break;
+	default:
 		ret = app_send_cmd(AUL_UTIL_PID, cmd, kb);
+		break;
+	}
 
 	_D("launch request result : %d", ret);
 	if (ret == AUL_R_LOCAL
@@ -299,7 +429,7 @@ int app_request_to_launchpad(int cmd, const char *pkgname, bundle *kb)
 #endif
 		) {
 		_E("app_request_to_launchpad : Same Process Send Local");
-		bundle *b;
+		bundle *b = NULL;
 
 #ifdef _APPFW_FEATURE_APP_CONTROL_LITE
 		if(ret == AUL_R_UG_LOCAL) {
@@ -329,6 +459,10 @@ int app_request_to_launchpad(int cmd, const char *pkgname, bundle *kb)
 			case APP_RESUME_BY_PID:
 				ret = __app_resume_local();
 				break;
+			case APP_PAUSE:
+			case APP_PAUSE_BY_PID:
+				ret = __app_pause_local();
+				break;
 			default:
 				_E("no support packet");
 		}
@@ -338,6 +472,12 @@ int app_request_to_launchpad(int cmd, const char *pkgname, bundle *kb)
 	/* cleanup */
 	if (must_free)
 		bundle_free(kb);
+
+#ifdef _APPFW_FEATURE_APP_CONTROL_LITE
+	pkgmgrinfo_pkginfo_set_zone(oldZone, NULL, 0);
+#endif
+
+	traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 
 	return ret;
 }
@@ -375,7 +515,8 @@ int aul_sock_handler(int fd)
 		return -1;
 	}
 
-	if (pkt->cmd != APP_RESULT && pkt->cmd != APP_CANCEL && cr.uid != 0) {
+	if (pkt->cmd != APP_RESULT && pkt->cmd != APP_CANCEL && pkt->cmd != APP_SUSPEND && pkt->cmd != APP_WAKE
+		&&cr.uid != 0 && cr.uid != SYSTEM_UID) {
 		_E("security error");
 		__send_result_to_launchpad(clifd, -1);
 		free(pkt);
@@ -383,10 +524,7 @@ int aul_sock_handler(int fd)
 	}
 
 	if (pkt->cmd != APP_RESULT && pkt->cmd != APP_CANCEL && pkt->cmd != APP_KEY_EVENT && pkt->cmd != APP_TERM_BY_PID_ASYNC
-#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
-		&& pkt->cmd != APP_PAUSE_LCD_OFF && pkt->cmd != APP_RESUME_LCD_ON
-#endif
-		) {
+		&& pkt->cmd != APP_SUSPEND && pkt->cmd != APP_WAKE ) {
 		ret = __send_result_to_launchpad(clifd, 0);
 		if (ret < 0) {
 			free(pkt);
@@ -416,9 +554,19 @@ int aul_sock_handler(int fd)
 		app_resume();
 		break;
 
+	case APP_SUSPEND:
+		app_prepare_to_suspend();
+		break;
+	case APP_WAKE:
+		app_prepare_to_wake();
+		break;
 	case APP_TERM_BY_PID:	/* run in callee */
 	case APP_TERM_BY_PID_ASYNC:
 		app_terminate();
+		break;
+
+	case APP_TERM_BGAPP_BY_PID:
+		bgapp_terminate();
 		break;
 
 	case APP_TERM_REQ_BY_PID:	/* run in callee */
@@ -447,15 +595,10 @@ int aul_sock_handler(int fd)
 		bundle_free(kbundle);
 		break;
 
-#ifdef _APPFW_FEATURE_VISIBILITY_CHECK_BY_LCD_STATUS
-	case APP_PAUSE_LCD_OFF:
-		app_pause_lcd_off();
+	case APP_PAUSE_BY_PID:
+		app_pause();
 		break;
 
-	case APP_RESUME_LCD_ON:
-		app_resume_lcd_on();
-		break;
-#endif
 	default:
 		_E("no support packet");
 	}
@@ -525,11 +668,10 @@ int aul_register_init_callback(
 int aul_initialize()
 {
 	if (aul_initialized) {
-		//_E("aul already initialized");
+		_E("aul already initialized");
 		return AUL_R_ECANCELED;
 	}
-
-	aul_fd = __create_server_sock(getpid());
+	aul_fd = __create_server_sock(getpid() + _pid_offset);
 	if (aul_fd < 0) {
 		_E("aul_init create sock failed");
 		return AUL_R_ECOMM;
@@ -546,6 +688,7 @@ SLPAPI void aul_finalize()
 
 	if (aul_initialized) {
 		close(aul_fd);
+		aul_initialized = 0;
 	}
 
 	return;
@@ -618,6 +761,19 @@ SLPAPI int aul_terminate_pid(int pid)
 	snprintf(pkgname, MAX_PID_STR_BUFSZ, "%d", pid);
 	ret = app_request_to_launchpad(APP_TERM_BY_PID, pkgname, NULL);
 	return ret;
+}
+
+SLPAPI int aul_terminate_bgapp_pid(int pid)
+{
+        char pkgname[MAX_PID_STR_BUFSZ];
+        int ret;
+
+        if (pid <= 0)
+                return AUL_R_EINVAL;
+
+        snprintf(pkgname, MAX_PID_STR_BUFSZ, "%d", pid);
+        ret = app_request_to_launchpad(APP_TERM_BGAPP_BY_PID, pkgname, NULL);
+        return ret;
 }
 
 SLPAPI int aul_terminate_pid_without_restart(int pid)
@@ -704,5 +860,29 @@ SLPAPI int aul_unset_data_control_provider_cb(void)
 	return 0;
 }
 #endif
+
+SLPAPI int aul_pause_app(const char *appid)
+{
+	int ret;
+
+	if (appid == NULL)
+		return AUL_R_EINVAL;
+
+	ret = app_request_to_launchpad(APP_PAUSE, appid, NULL);
+	return ret;
+}
+
+SLPAPI int aul_pause_pid(int pid)
+{
+	char app_pid[MAX_PID_STR_BUFSZ];
+	int ret;
+
+	if (pid <= 0)
+		return AUL_R_EINVAL;
+
+	snprintf(app_pid, MAX_PID_STR_BUFSZ, "%d", pid);
+	ret = app_request_to_launchpad(APP_PAUSE_BY_PID, app_pid, NULL);
+	return ret;
+}
 
 /* vi: set ts=8 sts=8 sw=8: */

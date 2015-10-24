@@ -19,6 +19,7 @@
  *
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -26,7 +27,6 @@
 #include <fcntl.h>
 #include <Ecore_X.h>
 #include <Ecore_Input.h>
-#include <utilX.h>
 #include <Ecore.h>
 #include <Evas.h>
 #include <aul.h>
@@ -45,19 +45,16 @@
 #include "aul_util.h"
 #include "app_sock.h"
 #include "amd_appinfo.h"
-#include "amd_cgutil.h"
 #include "amd_key.h"
 #include "amd_status.h"
 #include "amd_launch.h"
 #include "amd_request.h"
-
-#ifndef MOUNT_PATH
-#  define MOUNT_PATH "/sys/fs/cgroup"
+#include "amd_app_group.h"
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+#include "appfw_env.h"
+#include "app_signal.h"
 #endif
 
-#ifndef AGENT_PATH
-#  define AGENT_PATH "/usr/bin/daemon-manager-release-agent"
-#endif
 
 #ifdef _APPFW_FEATURE_BG_PROCESS_LIMIT
 typedef struct _r_app_info_t{
@@ -69,8 +66,9 @@ GSList *r_app_info_list = NULL;
 #endif
 
 gboolean platform_ready = false;
-
-#define WINDOW_READY	"/tmp/.wm_ready"
+#ifdef _APPFW_FEATURE_ULTRA_POWER_SAVING_MODE
+int ups_mode = 0;
+#endif
 
 typedef struct _window_watch {
 	int watch_fd;
@@ -79,6 +77,13 @@ typedef struct _window_watch {
 } _window_watch_t;
 static _window_watch_t *win_info_t = NULL;
 
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+extern DBusConnection *conn;
+extern struct appinfomgr *_laf;
+#endif
+
+static int window_initialized = 0;
+
 #ifdef _APPFW_FEATURE_BG_PROCESS_LIMIT
 static void __vconf_cb(keynode_t *key, void *data);
 #endif
@@ -86,22 +91,6 @@ static int __app_dead_handler(int pid, void *data);
 static int __init();
 
 extern int _status_init(struct amdmgr* amd);
-
-static int __send_to_sigkill(int pid)
-{
-	int pgid;
-
-	_D("__send_to_sigkill, pid: %d", pid);
-
-	pgid = getpgid(pid);
-	if (pgid <= 1)
-		return -1;
-
-	if (killpg(pgid, SIGKILL) < 0)
-		return -1;
-
-	return 0;
-}
 
 #ifdef _APPFW_FEATURE_BG_PROCESS_LIMIT
 static int __kill_bg_apps(int limit)
@@ -120,8 +109,7 @@ static int __kill_bg_apps(int limit)
 
 	for ( i=0, iter = r_app_info_list; i<n ; i++) {
 		info_t = (r_app_info_t *)iter->data;
-		//__send_to_sigkill(info_t->pid);
-		proc_group_change_status(PROC_CGROUP_SET_TERMINATE_REQUEST, info_t->pid, NULL);
+		aul_send_app_terminate_request_signal(info_t->pid, NULL, NULL, NULL);
 		_term_app(info_t->pid, 0);
 		iter = g_slist_next(iter);
 		r_app_info_list = g_slist_remove(r_app_info_list, info_t);
@@ -234,8 +222,6 @@ gboolean __add_item_running_list(gpointer user_data)
 
 END:
 	pkgmgrinfo_appinfo_destroy_appinfo(handle);
-
-	free(item);
 	return false;
 }
 
@@ -254,26 +240,138 @@ static void __vconf_cb(keynode_t *key, void *data)
 }
 #endif
 
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+static int __tep_unmount_dbus(char *mnt_path)
+{
+	DBusMessage *msg;
+	msg = dbus_message_new_method_call(TEP_BUS_NAME, TEP_OBJECT_PATH,
+	                                   TEP_INTERFACE_NAME, TEP_UNMOUNT_METHOD);
+	if (!msg) {
+		_E("dbus_message_new_method_call(%s:%s-%s)", TEP_OBJECT_PATH,
+		   TEP_INTERFACE_NAME, TEP_UNMOUNT_METHOD);
+		return -1;
+	}
+
+	if (!dbus_message_append_args(msg,
+	                              DBUS_TYPE_STRING, &mnt_path,
+	                              DBUS_TYPE_INVALID)) {
+		_E("Ran out of memory while constructing args\n");
+		dbus_message_unref(msg);
+		return -1;
+	}
+
+	if (dbus_connection_send(conn, msg, NULL) == FALSE) {
+		_E("dbus send error");
+		dbus_message_unref(msg);
+		return -1;
+	}
+	dbus_message_unref(msg);
+	return 0;
+}
+
+static void __send_unmount_request(int pid)
+{
+	const char *tep_name = NULL;
+	const struct appinfo *ai = NULL;
+	char *appid = NULL;
+	appid = _status_app_get_appid_bypid(pid);
+	if (!appid) {
+		_E("_status_app_get_appid_bypid : appid not found");
+		return;
+	}
+	ai = appinfo_find(_laf, appid);
+	tep_name = appinfo_get_value(ai, AIT_TEP);
+	if (tep_name != NULL) {
+		char tep_message[PATH_MAX] = {0, };
+		const char *installed_storage = NULL;
+		char *mnt_path = NULL;
+		struct stat link_buf;
+
+		installed_storage  = appinfo_get_value(ai, AIT_STORAGE_TYPE);
+		if (installed_storage != NULL) {
+			if (strncmp(installed_storage, "internal", 8) == 0) {
+				snprintf(tep_message, sizeof(tep_message), "%s%s/res/tep", appfw_env_get_apps_path(), appid);
+				mnt_path = strdup(tep_message);
+			} else if (strncmp(installed_storage, "external", 8) == 0) {
+				snprintf(tep_message, sizeof(tep_message), "%step/tep-access", appfw_env_get_external_storage_path());
+				mnt_path = strdup(tep_message);
+			}
+			if (mnt_path) {
+				int ret = __tep_unmount_dbus(mnt_path);
+				if (ret < 0) {
+					_E("dbus call failed for unmount");
+				}
+				ret = lstat(mnt_path, &link_buf);
+				if (ret == 0) {
+					ret = unlink(mnt_path);
+					if (ret == 0)
+						_D("Symbolic link removed");
+					else
+						_E("Failed to remove the link");
+				}
+				free(mnt_path);
+			}
+		}
+	}
+}
+#endif
+
 static int __app_dead_handler(int pid, void *data)
 {
 	char trm_buf[MAX_PACKAGE_STR_SIZE];
 	char buf[MAX_LOCAL_BUFSZ];
 
-	_I("__app_dead_handler, pid: %d", pid);
+	_W("__app_dead_handler, pid: %d", pid);
 
 	if(pid <= 0)
 		return 0;
+
+#ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
+	__send_unmount_request(pid);
+#endif
+
+	if (app_group_is_leader_pid(pid)) {
+		_W("app_group_leader_app, pid: %d", pid);
+		if (app_group_find_second_leader(pid) == -1) {
+			app_group_clear_top(pid);
+			app_group_set_dead_pid(pid);
+			app_group_remove(pid);
+		} else
+			app_group_remove_leader_pid(pid);
+	} else if (app_group_is_sub_app(pid)) {
+		_W("app_group_sub_app, pid: %d", pid);
+		int caller_pid = app_group_get_next_caller_pid(pid);
+
+		if (app_group_can_reroute(pid) || (caller_pid > 0 && caller_pid != pid)) {
+			_W("app_group reroute");
+			app_group_reroute(pid);
+		} else {
+			_W("app_group clear top");
+			app_group_clear_top(pid);
+		}
+		app_group_set_dead_pid(pid);
+		app_group_remove(pid);
+	}
+
+	app_group_remove_from_recycle_bin(pid);
 
 	_unregister_key_event(pid);
 #ifdef _APPFW_FEATURE_BG_PROCESS_LIMIT
 	__remove_item_running_list(pid);
 #endif
+	_revoke_temporary_permission(pid);
 	_status_remove_app_info_list(pid);
 	snprintf(trm_buf, MAX_PACKAGE_STR_SIZE, "appinfo_terminated:[PID]%d", pid);
 	__trm_app_info_send_socket(trm_buf);
+	aul_send_app_terminated_signal(pid);
 
 	snprintf(buf, MAX_LOCAL_BUFSZ, "%s/%d", AUL_SOCK_PREFIX, pid);
 	unlink(buf);
+
+#ifdef _APPFW_FEATURE_AMD_MODULE_LOG
+	snprintf(buf, MAX_LOCAL_BUFSZ, "%d", pid);
+	_status_log_save("TERMINATED", buf);
+#endif
 
 	return 0;
 }
@@ -292,10 +390,17 @@ static void __start_cb(void *user_data,
 	if (r == 1 && componet && strncmp(componet, "svcapp", 6) == 0)
 	{
 		const char *appid = appinfo_get_value(ai, AIT_NAME);
+#ifdef _APPFW_FEATURE_ULTRA_POWER_SAVING_MODE
+		r = appinfo_get_boolean(ai, AIT_PRELOAD);
+		if (ups_mode == SETTING_PSMODE_EMERGENCY && r == 0) {
+			_W("In UPS mode, skip to launch the servce apps");
+			return;
+		}
+#endif
 		if (appid && _status_app_is_running(appid) < 0)
 		{
-			_I("start service (on-boot) - %s", appid);
-			_start_srv(ai, NULL);
+			_W("start service (on-boot) - %s", appid);
+			_start_srv(ai);
 		}
 		else
 		{
@@ -306,6 +411,11 @@ static void __start_cb(void *user_data,
 
 static void _start_services(struct amdmgr *amd)
 {
+#ifdef _APPFW_FEATURE_ULTRA_POWER_SAVING_MODE
+	if(vconf_get_int(VCONFKEY_SETAPPL_PSMODE, &ups_mode) < 0)
+		_E("vconf_get_int() failed");
+#endif
+
 	appinfo_foreach(amd->af, __start_cb, amd);
 }
 
@@ -324,40 +434,35 @@ static gboolean __platform_ready_handler(gpointer data)
 
 static int __booting_done_handler(int pid, void *data)
 {
-	guint timer_id;
-
 	_E("[Info]__booting_done_handler, pid: %d", pid);
 
 	_start_services((struct amdmgr*)data);
 
-	timer_id = g_timeout_add(60000, __platform_ready_handler, NULL);
+	guint timer_id = g_timeout_add(60000, __platform_ready_handler, NULL);
+	SECURE_LOGW("[Info] timer_id: %u", timer_id);
 
 	return 0;
 }
 
-static gboolean _check_window_ready(void)
-{
-	if (access(WINDOW_READY, R_OK) == 0)
-		return true;
-	else
-		return false;
-}
-
 static void __window_init(void)
 {
-	_D("_window_init");
+	_W("_window_init");
 
 	ecore_x_init(NULL);
 	_set_atom_effect();
-#ifndef __i386__
 	_key_init();
-#endif
+	window_initialized = 1;
+}
+
+int _window_is_initialized()
+{
+	return window_initialized;
 }
 
 static Eina_Bool _window_cb(void *data, Ecore_Fd_Handler * fd_handler)
 {
 	int fd;
-	char buf[FILENAME_MAX];
+	char buf[FILENAME_MAX] = {0};
 	ssize_t len = 0;
 	struct inotify_event* event;
 
@@ -372,12 +477,15 @@ static Eina_Bool _window_cb(void *data, Ecore_Fd_Handler * fd_handler)
 		return ECORE_CALLBACK_CANCEL;
 	}
 	len = read(fd, buf, FILENAME_MAX);
+	if (len < 0)
+		_E("read failed, error [%s]", strerror(errno));;
 
 	event = (struct inotify_event*) &buf[0];
 
-	_D("filename : %s", event->name);
+	if(event)
+		_D("filename : %s", event->name);
 
-	if (access(WINDOW_READY, R_OK) == 0) {
+	if (_status_check_window_ready()) {
 		__window_init();
 		if (win_info_t) {
 			ecore_main_fd_handler_del(win_info_t->win_watch_ewd);
@@ -392,7 +500,7 @@ static Eina_Bool _window_cb(void *data, Ecore_Fd_Handler * fd_handler)
 
 static void _register_window_init(void)
 {
-	_D("_register_window_init");
+	_W("_register_window_init");
 
 	win_info_t = malloc(sizeof(_window_watch_t));
 	if (!win_info_t) {
@@ -407,7 +515,7 @@ static void _register_window_init(void)
 
 static void _window_init(void)
 {
-	if (_check_window_ready())
+	if (_status_check_window_ready())
 		__window_init();
 	else
 		_register_window_init();
@@ -418,26 +526,30 @@ static int __init()
 	struct amdmgr amd;
 	int ret = 0;
 
+	/* sigprocmask() is used to fetch and/or change the signal mask of the calling thread.
+	 * As a result, please make sure that there are not any other threads except for calling thread.
+	 * */
+	int fd = _signal_block_sigchld();
+	assert(fd != -1);
+
 	ecore_init();
 	evas_init();
 	ecore_event_init();
 
-	_D("ecore init done\n");
+	_W("ecore init done\n");
 
 	ret = appinfo_init(&amd.af);
 	assert(ret == 0);
 
-	ret = cgutil_create(MOUNT_PATH, AGENT_PATH, &amd.cg);
-	assert(ret == 0);
-
-	ret = _request_init(&amd);
+	ret = _request_init(&amd, fd);
 	assert(ret == 0);
 
 	_launch_init(&amd);
 	_status_init(&amd);
 	_window_init();
+	app_group_init();
 
-	_D("AMD init done\n");
+	_W("AMD init done\n");
 
 #ifdef _APPFW_FEATURE_BG_PROCESS_LIMIT
 	if (vconf_notify_key_changed(VCONFKEY_SETAPPL_DEVOPTION_BGPROCESS, __vconf_cb, NULL) != 0) {
@@ -452,7 +564,7 @@ static int __init()
 	int res = setpriority(PRIO_PROCESS, 0, -12);
 	if (res == -1)
 	{
-		SECURE_LOGE("Setting process (%d) priority to -12 failed, errno: %d (%s)",
+		_E("Setting process (%d) priority to -12 failed, errno: %d (%s)",
 				getpid(), errno, strerror(errno));
 	}
 #endif
@@ -461,7 +573,7 @@ static int __init()
 
 gboolean  __amd_ready(gpointer user_data)
 {
-	_D("AMD ready\n");
+	_W("AMD ready\n");
 
 	int handle = creat("/tmp/amd_ready", S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
 	if (handle != -1)
@@ -472,7 +584,7 @@ gboolean  __amd_ready(gpointer user_data)
 
 int main(int argc, char *argv[])
 {
-	_D("AMD main()\n");
+	_W("AMD main()\n");
 
 #ifdef _APPFW_FEATURE_APP_CHECKER
 	if (ac_server_initialize() != AC_R_OK){
