@@ -142,7 +142,7 @@ static void __prepare_to_wake_services(int pid)
 	__app_send_raw_with_noreply(pid, APP_WAKE, (unsigned char *)&dummy, sizeof(int));
 }
 
-static void __set_fg_flag(int cpid, int flag, gboolean force)
+static void __set_fg_flag(int cpid, int flag)
 {
 	int lpid = app_group_get_leader_pid(cpid);
 	GHashTableIter iter;
@@ -159,7 +159,7 @@ static void __set_fg_flag(int cpid, int flag, gboolean force)
 			while (i != NULL) {
 				ac = (app_group_context_t*) i->data;
 
-				if (ac->fg != flag || force == TRUE) {
+				if (ac->fg != flag) {
 					const char *appid = NULL;
 					const char *pkgid = NULL;
 					const struct appinfo *ai = NULL;
@@ -393,7 +393,7 @@ static void __group_remove(int pid)
 			GINT_TO_POINTER(pid));
 
 	if (ppid != -1) {
-		app_group_set_status(ppid, -1, FALSE);
+		app_group_set_status(ppid, -1);
 	}
 }
 
@@ -825,7 +825,7 @@ int app_group_get_status(int pid)
 	return -1;
 }
 
-int app_group_set_status(int pid, int status, gboolean force)
+int app_group_set_status(int pid, int status)
 {
 	GHashTableIter iter;
 	gpointer key, value;
@@ -844,9 +844,9 @@ int app_group_set_status(int pid, int status, gboolean force)
 				GList *last = g_list_last(list);
 				app_group_context_t *last_ac = (app_group_context_t*) last->data;
 
-				if (last_ac->wid != 0 || status == STATUS_VISIBLE || force == TRUE) {
+				if (last_ac->wid != 0 || status == STATUS_VISIBLE) {
 					if (__is_visible(pid)) {
-						__set_fg_flag(pid, 1, force);
+						__set_fg_flag(pid, 1);
 						if (!ac->group_sig && (int)key != pid) {
 							char *appid = NULL;
 							const char *pkgid = NULL;
@@ -861,7 +861,7 @@ int app_group_set_status(int pid, int status, gboolean force)
 							ac->group_sig = 1;
 						}
 					} else
-						__set_fg_flag(pid, 0, force);
+						__set_fg_flag(pid, 0);
 				}
 				return 0;
 			}
@@ -940,7 +940,6 @@ int app_group_find_second_leader(int lpid)
 		if (list != NULL) {
 			app_group_context_t *ac = (app_group_context_t*) list->data;
 			if (ac->can_be_leader) {
-				_W("found the second leader, lpid: %d, pid: %d", lpid, ac->pid);
 				return ac->pid;
 			}
 		}
@@ -1252,33 +1251,4 @@ void app_group_get_idle_pids(int *cnt, int **pids)
 	*cnt = idle_cnt;
 	*pids = idle_pids;
 }
-
-int app_group_get_next_caller_pid(int pid)
-{
-	GHashTableIter iter;
-	gpointer key, value;
-
-	g_hash_table_iter_init(&iter, app_group_hash);
-	while (g_hash_table_iter_next(&iter, &key, &value)) {
-		GList *list = (GList*) value;
-		GList *i = g_list_first(list);
-
-		while (i != NULL) {
-			app_group_context_t *ac = (app_group_context_t*) i->data;
-
-			if (ac->pid == pid) {
-				i = g_list_next(i);
-				if (i == NULL)
-					return -1;
-
-				ac = (app_group_context_t*) i->data;
-				return ac->caller_pid;
-			}
-			i = g_list_next(i);
-		}
-	}
-
-	return -1;
-}
-
 

@@ -26,7 +26,7 @@
 
 int _status_add_app_info_list(const char *appid, const char *app_path,
 	const char *caller, int pid, int pad_pid, int is_subapp);
-int _status_update_app_info_list(int pid, int status, gboolean force);
+int _status_update_app_info_list(int pid, int status);
 int _status_update_app_info_caller_pid(int pid, int caller_pid);
 int _status_get_app_info_last_caller_pid(int pid);
 int _status_remove_app_info_list(int pid);

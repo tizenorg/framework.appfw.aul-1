@@ -321,7 +321,7 @@ static int __app_dead_handler(int pid, void *data)
 	char trm_buf[MAX_PACKAGE_STR_SIZE];
 	char buf[MAX_LOCAL_BUFSZ];
 
-	_W("__app_dead_handler, pid: %d", pid);
+	_I("__app_dead_handler, pid: %d", pid);
 
 	if(pid <= 0)
 		return 0;
@@ -331,7 +331,6 @@ static int __app_dead_handler(int pid, void *data)
 #endif
 
 	if (app_group_is_leader_pid(pid)) {
-		_W("app_group_leader_app, pid: %d", pid);
 		if (app_group_find_second_leader(pid) == -1) {
 			app_group_clear_top(pid);
 			app_group_set_dead_pid(pid);
@@ -339,16 +338,10 @@ static int __app_dead_handler(int pid, void *data)
 		} else
 			app_group_remove_leader_pid(pid);
 	} else if (app_group_is_sub_app(pid)) {
-		_W("app_group_sub_app, pid: %d", pid);
-		int caller_pid = app_group_get_next_caller_pid(pid);
-
-		if (app_group_can_reroute(pid) || (caller_pid > 0 && caller_pid != pid)) {
-			_W("app_group reroute");
+		if (app_group_can_reroute(pid))
 			app_group_reroute(pid);
-		} else {
-			_W("app_group clear top");
+		else
 			app_group_clear_top(pid);
-		}
 		app_group_set_dead_pid(pid);
 		app_group_remove(pid);
 	}
@@ -450,7 +443,9 @@ static void __window_init(void)
 
 	ecore_x_init(NULL);
 	_set_atom_effect();
+#ifndef __i386__
 	_key_init();
+#endif
 	window_initialized = 1;
 }
 

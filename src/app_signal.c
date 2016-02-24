@@ -321,8 +321,6 @@ SLPAPI int aul_update_freezer_status(int pid, const char* type)
 
 	dbus_error_init(&err);
 
-	_W("send_update_freezer_status, pid: %d, type: %s", pid, type);
-
 	conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
 	if (!conn) {
 		_E("Fail to dbus_bus_get : %s", err.message);
@@ -345,6 +343,8 @@ SLPAPI int aul_update_freezer_status(int pid, const char* type)
 		_E("Failed to append a D-Bus Message.");
 		ret = -1;
 	}
+
+	_D("Send a freezer signal pid: %d, type: %s", pid, type);
 
 	if (!dbus_connection_send(conn, msg, &serial)) {
 		_E("Failed to send a D-Bus Message.");
@@ -390,8 +390,6 @@ SLPAPI int aul_send_app_launch_request_signal(int pid, const char* appid, const 
 
 	__app_status_dbus_init();
 
-	_W("send_app_launch_signal, pid: %d, appid: %s", pid, appid);
-
 	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
 			AUL_APP_STATUS_DBUS_SIGNAL_INTERFACE,
 			AUL_APP_STATUS_DBUS_LAUNCH_REQUEST);
@@ -434,8 +432,6 @@ SLPAPI int aul_send_app_resume_request_signal(int pid, const char* appid, const 
 	int ret = -1;
 
 	__app_status_dbus_init();
-
-	_W("send_app_resume_signal, pid: %d, appid: %s", pid, appid);
 
 	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
 			AUL_APP_STATUS_DBUS_SIGNAL_INTERFACE,
@@ -548,8 +544,6 @@ SLPAPI int aul_send_app_status_change_signal(int pid, const char* appid, const c
 
 	int ret = -1;
 
-	_W("send_app_status_change_signal, pid: %d, appid: %s, status: %s", pid, appid, status);
-
 	__app_status_dbus_init();
 
 	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
@@ -647,8 +641,6 @@ SLPAPI int aul_send_app_group_signal(int owner_pid, int child_pid, const char *c
 
 	int ret = -1;
 
-	_W("send_app_group_signal, owner: %d, child: %d", owner_pid, child_pid);
-
 	__app_status_dbus_init();
 
 	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
@@ -694,3 +686,4 @@ end:
 
 	return ret;
 }
+

@@ -26,7 +26,7 @@ void app_group_clear_top(int pid);
 int app_group_get_leader_pid(int pid);
 void app_group_set_dead_pid(int pid);
 int app_group_get_status(int pid);
-int app_group_set_status(int pid, int status, gboolean force);
+int app_group_set_status(int pid, int status);
 int app_group_get_fg_flag(int pid);
 int app_group_set_hint(int pid, bundle *kb);
 int app_group_find_second_leader(int lpid);
@@ -40,6 +40,5 @@ void app_group_restart_app(int pid, bundle *b);
 int app_group_find_pid_from_recycle_bin(const char *appid);
 void app_group_get_idle_pids(int *cnt, int **pids);
 void app_group_remove_from_recycle_bin(int pid);
-int app_group_get_next_caller_pid(int pid);
 #endif
 

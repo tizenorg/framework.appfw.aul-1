@@ -144,9 +144,6 @@ static int __send_result_data(int fd, int cmd, unsigned char *kb_data, int datal
 
 static int __send_result_to_client(int fd, int res)
 {
-	if (fd < 0)
-		return -1;
-
 	_W("__send_result_to_client, pid: %d", res);
 
 	if (send(fd, &res, sizeof(int), MSG_NOSIGNAL) < 0) {
@@ -162,9 +159,9 @@ static int __send_result_to_client(int fd, int res)
 
 static void __real_send(int clifd, int ret)
 {
-	if(clifd < 0)
+	if(clifd <= 0) {
 		return;
-
+	}
 	if (send(clifd, &ret, sizeof(int), MSG_NOSIGNAL) < 0) {
 		if (errno == EPIPE) {
 			_E("send failed due to EPIPE.\n");
@@ -261,7 +258,6 @@ static int __app_process_by_pid(int cmd,
 		char buf[512];
 		if (_status_get_pkgname_bypid(pid, buf, 512) == -1) {
 			_E("request for unknown pid. It might not be a pid of app: %d", pid);
-			__real_send(clifd, -1);
 			return -1;
 		}
 	}
@@ -887,7 +883,7 @@ static gboolean __request_handler(gpointer data)
 				ret = _start_app(appid, kb, pkt->cmd, cr.pid, cr.uid, clifd);
 #endif
 
-				if (ret > 0 && bundle_get_type(kb, AUL_K_PRELAUCHING) == BUNDLE_TYPE_NONE) {
+				if(ret > 0 && bundle_get_type(kb, AUL_K_PRELAUCHING) == BUNDLE_TYPE_NONE) {
 #ifdef _APPFW_FEATURE_BG_PROCESS_LIMIT
 					if (!app_group_is_group_app(kb)) {
 						item_pkt_t *item = g_malloc0(sizeof(item_pkt_t));
@@ -923,7 +919,7 @@ static gboolean __request_handler(gpointer data)
 				ret = _start_app(appid, kb, pkt->cmd, cr.pid, cr.uid, clifd);
 			}
 
-			if (ret > 0) {
+			if(ret > 0) {
 #ifdef _APPFW_FEATURE_BG_PROCESS_LIMIT
 				if (!app_group_is_group_app(kb)) {
 					item_pkt_t *item = g_malloc0(sizeof(item_pkt_t));
@@ -949,6 +945,7 @@ static gboolean __request_handler(gpointer data)
 		case APP_RESULT:
 		case APP_CANCEL:
 			ret = __foward_cmd(pkt->cmd, kb, cr.pid);
+			//__real_send(clifd, ret);
 			close(clifd);
 			break;
 		case APP_PAUSE:
@@ -978,12 +975,12 @@ static gboolean __request_handler(gpointer data)
 				term_pid = (char *)bundle_get_val(kb, AUL_K_PKG_NAME);
 				appid = _status_app_get_appid_bypid(atoi(term_pid));
 				ai = appinfo_find(_raf, appid);
-				if (ai) {
+				if(ai) {
 					appinfo_set_value((struct appinfo *)ai, AIT_STATUS, "norestart");
 					ret = __app_process_by_pid(pkt->cmd, term_pid, &cr, clifd);
 				} else {
 					ret = -1;
-					__send_result_to_client(clifd, ret);
+					close(clifd);
 				}
 			}
 			break;
@@ -1059,8 +1056,9 @@ static gboolean __request_handler(gpointer data)
 				ai = appinfo_find(_raf, appid);
 				appinfo_set_value((struct appinfo *)ai, AIT_STATUS, "norestart");
 			} else {
-				ret = _status_update_app_info_list(cr.pid, *status, FALSE);
+				ret = _status_update_app_info_list(cr.pid, *status);
 			}
+			//__send_result_to_client(clifd, ret);
 			close(clifd);
 			break;
 		case APP_GET_STATUS:
@@ -1402,10 +1400,4 @@ int _request_init(struct amdmgr *amd, int fd_sig)
 	return 0;
 }
 
-#ifdef _APPFW_FEATURE_SEND_HOME_LAUNCH_SIGNAL
-const char* _get_home_appid(void)
-{
-	return home_appid;
-}
-#endif
 
