@@ -28,6 +28,9 @@ int _release_srv(const char *appid);
 int _send_set_process_group_signal_signal(int owner_pid, int child_pid);
 int _signal_block_sigchld(void);
 int _signal_unblock_sigchld(void);
+#ifdef _APPFW_FEATURE_SEND_HOME_LAUNCH_SIGNAL
+const char* _get_home_appid(void);
+#endif
 
 #endif
 

@@ -1355,6 +1355,8 @@ int aul_listen_app_dead_signal(int (*func) (int, void *), void *data);
  */
 int aul_listen_app_launch_signal(int (*func) (int, void *), void *data);
 
+int aul_listen_app_launch_signal_v2(int (*func) (int, const char *, void *), void *data);
+
 int aul_listen_booting_done_signal(int (*func) (int, void *), void *data);
 
 int aul_listen_cooldown_signal(int (*func) (const char *, void *), void *data);

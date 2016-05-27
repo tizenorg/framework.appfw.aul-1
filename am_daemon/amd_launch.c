@@ -105,8 +105,9 @@
 #define HIDE_INDICATOR 0
 #define SHOW_INDICATOR 1
 
-#define PROC_STATUS_FG	3
-#define PROC_STATUS_BG	4
+#define PROC_STATUS_LAUNCH 0
+#define PROC_STATUS_FG 3
+#define PROC_STATUS_BG 4
 #ifdef _APPFW_FEATURE_CPU_BOOST
 #define APP_BOOSTING_PERIOD 1500 //msec
 #endif
@@ -125,6 +126,12 @@ DBusConnection *conn;
 guint grab_timer_id;
 #endif
 
+static GList *_fgmgr_list;
+
+struct fgmgr {
+	guint tid;
+	int pid;
+};
 
 #if 0
 /*Unused data structure. Will be removed*/
@@ -319,7 +326,7 @@ static void _do_exec(const char *cmd, const char *group, bundle *kb)
 	g_strfreev(argv);
 }
 
-static inline int __send_app_launch_signal(int launch_pid)
+static inline int __send_app_launch_signal(int launch_pid, const char *app_id)
 {
 	DBusMessage *message;
 
@@ -331,8 +338,9 @@ static inline int __send_app_launch_signal(int launch_pid)
 					  AUL_DBUS_APPLAUNCH_SIGNAL);
 
 	if (dbus_message_append_args(message,
-				     DBUS_TYPE_UINT32, &launch_pid,
-				     DBUS_TYPE_INVALID) == FALSE) {
+				DBUS_TYPE_UINT32, &launch_pid,
+				DBUS_TYPE_STRING, &app_id,
+				DBUS_TYPE_INVALID) == FALSE) {
 		_E("Failed to load data error");
 		return -1;
 	}
@@ -345,7 +353,7 @@ static inline int __send_app_launch_signal(int launch_pid)
 	dbus_connection_flush(conn);
 	dbus_message_unref(message);
 
-	_W("send launch signal done: %d", launch_pid);
+	_W("send launch signal done: %d, %s", launch_pid, app_id);
 
 	return 0;
 }
@@ -472,7 +480,7 @@ static int __check_cmdline(int ret)
 	return ret;
 }
 
-int start_process(const char *group, const char *cmd, bundle *kb)
+int start_process(const char *appid, const char *cmd, bundle *kb)
 {
 	int r;
 	pid_t p;
@@ -490,7 +498,7 @@ int start_process(const char *group, const char *cmd, bundle *kb)
 					getpid(), errno, strerror(errno));
 		}
 #endif
-		_do_exec(cmd, group, kb);
+		_do_exec(cmd, appid, kb);
 		/* exec error */
 
 		exit(0);
@@ -503,7 +511,7 @@ int start_process(const char *group, const char *cmd, bundle *kb)
 		_W("child process: %d", p);
 		r = __check_cmdline(p);
 		if(r > 0)
-			__send_app_launch_signal(r);
+			__send_app_launch_signal(r, appid);
 		else
 			_E("cmdline change failed.");
 		break;
@@ -768,10 +776,9 @@ int _pause_app(int pid, int clifd)
 			ret = -1;
 		}
 	}
-	_D("pause done\n");
 
-	if (ret > 0)
-		__set_reply_handler(ret, pid, clifd, APP_PAUSE_BY_PID);
+	_D("pause done\n");
+	close(clifd);
 
 	return ret;
 }
@@ -998,7 +1005,6 @@ static void __set_reply_handler(int fd, int pid, int clifd, int cmd)
 	r_info->gpollfd = gpollfd;
 	r_info->cmd = cmd;
 
-
 	r_info->timer_id = g_timeout_add(5000, __recv_timeout_handler, (gpointer) r_info);
 	g_source_add_poll(src, gpollfd);
 	g_source_set_callback(src, (GSourceFunc) __reply_handler,
@@ -1013,7 +1019,17 @@ void _term_sub_app(int pid)
 {
 	int dummy;
 	int ret;
+	char *appid = NULL;
+	const char *pkgid = NULL;
+	const char *type = NULL;
+	const struct appinfo *ai = NULL;
 
+	appid = _status_app_get_appid_bypid(pid);
+	ai = appinfo_find(_laf, appid);
+	pkgid = appinfo_get_value(ai, AIT_PKGID);
+	type = appinfo_get_value(ai, AIT_COMPTYPE);
+
+	aul_send_app_terminate_request_signal(pid, appid, pkgid, type);
 	if ( (ret = __app_send_raw_with_noreply(pid, APP_TERM_BY_PID_ASYNC,
 					(unsigned char *)&dummy, sizeof(int))) < 0) {
 		_E("terminate packet send error - use SIGKILL");
@@ -1294,17 +1310,20 @@ static void __amd_effect_image_file_set(char *image_file)
 
 	root_win = ecore_x_window_root_first_get();
 	SECURE_LOGD("path : %s", image_file);
-	ecore_x_window_prop_string_set(root_win, ATOM_IMAGE_EFFECT,image_file);
+	ecore_x_window_prop_string_set(root_win, ATOM_IMAGE_EFFECT, image_file);
 }
 
 
 static void __amd_send_message_to_e17(int screenmode, const char * indicator, int effect_type, int theme)
 {
+	traceBegin(TTRACE_TAG_APPLICATION_MANAGER, "AUL:AMD:EFFECT_START");
 	Ecore_X_Window root_win;
 	int ret;
 
-	if(!_window_is_initialized())
+	if (!_window_is_initialized()) {
+		traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 		return;
+	}
 
 	root_win = ecore_x_window_root_first_get();
 	 _D("root win : %x",root_win);
@@ -1312,7 +1331,7 @@ static void __amd_send_message_to_e17(int screenmode, const char * indicator, in
 	if (screenmode > 4 || screenmode < 0)
 		screenmode=0;
 
-	if (strncmp(indicator, "true", 4) == 0){
+	if (strncmp(indicator, "true", 4) == 0) {
 		_D("[LAUNCHING EFFECT]: screen mode(%d), effect type(%d), theme(%d), indicator show",
 			screen_orientation[screenmode], effect_type, theme);
 		ret = ecore_x_client_message32_send (root_win, ATOM_IMAGE_EFFECT,
@@ -1320,7 +1339,7 @@ static void __amd_send_message_to_e17(int screenmode, const char * indicator, in
 			screen_orientation[screenmode],
 			SHOW_INDICATOR, theme, 0);
 
-	}else{
+	} else {
 		_D("[LAUNCHING EFFECT]: screen mode(%d), effect type(%d), theme(%d), indicator show",
 			screen_orientation[screenmode], effect_type, theme);
 		ret = ecore_x_client_message32_send (root_win, ATOM_IMAGE_EFFECT,
@@ -1330,6 +1349,7 @@ static void __amd_send_message_to_e17(int screenmode, const char * indicator, in
 	}
 	ecore_x_flush();
 	_D("ecore_x_client_message32_send : %d",ret);
+	traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 }
 #endif
 
@@ -1432,6 +1452,54 @@ static gboolean __grab_timeout_handler(gpointer data)
 	return FALSE;
 }
 #endif
+
+static gboolean __fg_timeout_handler(gpointer data)
+{
+	struct fgmgr *fg = data;
+
+	if (!fg)
+		return FALSE;
+
+	_status_update_app_info_list(fg->pid, STATUS_BG, TRUE);
+
+	_fgmgr_list = g_list_remove(_fgmgr_list, fg);
+	free(fg);
+
+	return FALSE;
+}
+
+static void __add_fgmgr_list(int pid)
+{
+	struct fgmgr *fg;
+
+	fg = calloc(1, sizeof(struct fgmgr));
+	if (!fg)
+		return;
+
+	fg->pid = pid;
+	fg->tid = g_timeout_add(5000, __fg_timeout_handler, fg);
+
+	_fgmgr_list = g_list_append(_fgmgr_list, fg);
+}
+
+static void __del_fgmgr_list(int pid)
+{
+	GList *iter = NULL;
+	struct fgmgr *fg;
+
+	if (pid < 0)
+		return;
+
+	for (iter = _fgmgr_list; iter != NULL; iter = g_list_next(iter)) {
+		fg = (struct fgmgr *)iter->data;
+		if (fg->pid == pid) {
+			g_source_remove(fg->tid);
+			_fgmgr_list = g_list_remove(_fgmgr_list, fg);
+			free(fg);
+			return;
+		}
+	}
+}
 
 #ifdef _APPFW_FEATURE_EXPANSION_PKG_INSTALL
 static int __tep_mount(char *mnt_path[])
@@ -1542,7 +1610,7 @@ static int __check_app_control_privilege(const char *operation, int caller_pid, 
 		if (api_ver && strverscmp("2.4", api_ver) < 1) { // ver 2.4 or later
 			ret = security_server_check_privilege_by_pid(caller_pid, "privilege::tizen::download", "rw");
 			if (ret != SECURITY_SERVER_API_SUCCESS) {
-				_E("caller %d violates http://tizen.org/privilege/download privilege", caller_pid);
+				_E("caller %d violates http://tizen.org/privilege/download privilege (%d)", caller_pid, ret);
 				return -EILLEGALACCESS;
 			}
 		}
@@ -1550,7 +1618,7 @@ static int __check_app_control_privilege(const char *operation, int caller_pid, 
 		// Check the privilege for call operation
 		ret = security_server_check_privilege_by_pid(caller_pid, "privilege::tizen::call", "rw");
 		if (ret != SECURITY_SERVER_API_SUCCESS) {
-			_E("caller %d violates http://tizen.org/privilege/call privilege", caller_pid);
+			_E("caller %d violates http://tizen.org/privilege/call privilege (%d)", caller_pid, ret);
 			return -EILLEGALACCESS;
 		}
 	}
@@ -2003,6 +2071,55 @@ static void __add_shared_info(int pid, const char *caller_exec_label, const char
 	_status_add_shared_info(pid, caller_exec_label, paths);
 }
 
+#ifdef _APPFW_FEATURE_TERMINATE_UNMANAGEABLE_APP
+#ifdef _APPFW_FEATURE_SEND_HOME_LAUNCH_SIGNAL
+static void __check_home_app(int pid)
+{
+	const char *home_app = _get_home_appid();
+	const char *appid = NULL;
+
+	if (home_app == NULL)
+		return;
+
+	appid = _status_app_get_appid_bypid(pid);
+
+	if (appid && strcmp(appid, home_app) == 0) {
+		int cnt = 0;
+		int *pids = NULL;
+		int i;
+		const char *taskmanage = NULL;
+		const struct appinfo *ai = NULL;
+		const char* bg = NULL;
+
+		app_group_get_leader_pids(&cnt, &pids);
+		if (pids) {
+			for (i = 0; i < cnt; ++i) {
+				appid = _status_app_get_appid_bypid(pids[i]);
+				if (appid == NULL || strcmp(appid, home_app) == 0)
+					continue;
+
+				ai = appinfo_find(_laf, appid);
+				taskmanage = appinfo_get_value(ai, AIT_TASKMANAGE);
+				bg = appinfo_get_value(ai, AIT_ALLOWED_BG);
+
+				if (taskmanage && strcmp("false", taskmanage) == 0
+					&& bg && strcmp("NONE", bg) == 0) {
+					int st = _status_get_app_info_status(pids[i]);
+					if (st != STATUS_DYING) {
+						_W("terminate %d %s %d", pids[i], appid, st);
+						aul_update_freezer_status(pids[i], "wakeup");
+						_term_sub_app(pids[i]);
+					}
+				}
+			}
+
+			free(pids);
+		}
+	}
+}
+#endif
+#endif
+
 int _revoke_temporary_permission(int pid)
 {
 	GList *list = _status_get_shared_info_list(pid);
@@ -2279,8 +2396,10 @@ int _start_app(const char* appid, bundle* kb, int cmd, int caller_pid, uid_t cal
 					return pid;
 				}
 
-				if (found_pid != -1)
+				if (found_pid != -1) {
+					_W("app_group_clear_top, pid: %d", found_pid);
 					app_group_clear_top(found_pid);
+				}
 			}
 
 			if (pid == -1 && can_attach)
@@ -2335,6 +2454,7 @@ int _start_app(const char* appid, bundle* kb, int cmd, int caller_pid, uid_t cal
 		if (__grant_temporary_permission(caller_pid, appid, kb,
 			&caller_exec_label, &callee_exec_label, &paths) == 0)
 			grant_permission = 1;
+
 		status = _status_get_app_info_status(pid);
 		if (pid > 0 && status != STATUS_DYING) {
 			if (caller_pid == pid) {
@@ -2579,6 +2699,9 @@ int _start_app(const char* appid, bundle* kb, int cmd, int caller_pid, uid_t cal
 			if (new_process) {
 				_D("add app group info");
 				app_group_start_app(pid, kb, lpid, can_attach, launch_mode);
+
+				if (component_type && strncmp(component_type, APP_TYPE_UI, strlen(APP_TYPE_UI)) == 0)
+					__add_fgmgr_list(pid);
 			} else if (cmd == APP_START
 					|| cmd == APP_START_RES
 					|| cmd == APP_START_ASYNC
@@ -2588,6 +2711,7 @@ int _start_app(const char* appid, bundle* kb, int cmd, int caller_pid, uid_t cal
 				 ) {
 				app_group_restart_app(pid, kb);
 			}
+
 #ifdef _APPFW_FEATURE_AMD_KEY
 			grab_timer_id = g_timeout_add(1000, __grab_timeout_handler, (void *)pid);
 #endif
@@ -2665,6 +2789,8 @@ int _start_app(const char* appid, bundle* kb, int cmd, int caller_pid, uid_t cal
 
 			if ((ret = __nofork_processing(cmd, pid, kb, fd)) < 0) {
 				pid = ret;
+			} else {
+				delay_reply = 1;
 			}
 		} else if (cmd != APP_RESUME) {
 #ifdef _APPFW_FEATURE_AMD_MODULE_LOG
@@ -2731,8 +2857,10 @@ int _start_app(const char* appid, bundle* kb, int cmd, int caller_pid, uid_t cal
 
 #ifdef _APPFW_FEATURE_APP_CHECKER
 		pkg_type = appinfo_get_value(ai, AIT_TYPE);
-		if (!pkg_type)
+		if (!pkg_type) {
+			traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 			return -1;
+		}
 
 		ret = ac_server_check_launch_privilege(appid, pkg_type, pid);
 		if (ret != AC_R_ERROR) {
@@ -2757,6 +2885,8 @@ int _start_app(const char* appid, bundle* kb, int cmd, int caller_pid, uid_t cal
 int __e17_status_handler(int pid, int status, void *data)
 {
 	if (status == PROC_STATUS_FG) {
+		__del_fgmgr_list(pid);
+
 #ifdef _APPFW_FEATURE_AMD_KEY
 		_D("pid(%d) status(%d)", pid, status);
 		if(_input_window_get() != 0)
@@ -2768,10 +2898,18 @@ int __e17_status_handler(int pid, int status, void *data)
 		}
 		g_source_remove(grab_timer_id);
 #endif
-
-		_status_update_app_info_list(pid, STATUS_VISIBLE);
+		_status_update_app_info_list(pid, STATUS_VISIBLE, FALSE);
+#ifdef _APPFW_FEATURE_TERMINATE_UNMANAGEABLE_APP
+#ifdef _APPFW_FEATURE_SEND_HOME_LAUNCH_SIGNAL
+		__check_home_app(pid);
+#endif
+#endif
 	} else if (status == PROC_STATUS_BG) {
-		_status_update_app_info_list(pid, STATUS_BG);
+		_status_update_app_info_list(pid, STATUS_BG, FALSE);
+	} else if (status == PROC_STATUS_LAUNCH) {
+		_D("pid(%d) status(%d)", pid, status);
+		traceBegin(TTRACE_TAG_APPLICATION_MANAGER, "AUL:AMD:EFFECT_DONE");
+		traceEnd(TTRACE_TAG_APPLICATION_MANAGER);
 	}
 
 	return 0;

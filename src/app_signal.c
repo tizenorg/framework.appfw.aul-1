@@ -35,6 +35,9 @@ static void *_app_dead_data;
 static int (*_app_launch_handler) (int pid, void *data);
 static void *_app_launch_data;
 
+static int (*_app_launch_handler2) (int pid, const char *app_id, void *data);
+static void *_app_launch_data2;
+
 static int (*_booting_done_handler) (int pid, void *data);
 static void *_booting_done_data;
 
@@ -81,48 +84,65 @@ __app_dbus_signal_filter(DBusConnection *conn, DBusMessage *message,
 
 	if (dbus_message_is_signal(
 	  message, interface, AUL_DBUS_APPDEAD_SIGNAL)) {
-		if (dbus_message_get_args(message, &error, DBUS_TYPE_UINT32,
-		     &pid, DBUS_TYPE_INVALID) == FALSE) {
-			_E("Failed to get data: %s", error.message);
-			dbus_error_free(&error);
-			return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-		}
-		if (_app_dead_handler)
+		if (_app_dead_handler) {
+			if (dbus_message_get_args(message, &error,
+					DBUS_TYPE_UINT32, &pid,
+					DBUS_TYPE_INVALID) == FALSE) {
+				_E("Failed to get data: %s", error.message);
+				dbus_error_free(&error);
+				return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+			}
 			_app_dead_handler(pid, _app_dead_data);
+		}
 	} else if (dbus_message_is_signal(
 	  message, interface, AUL_DBUS_APPLAUNCH_SIGNAL)) {
-		if (dbus_message_get_args(message, &error, DBUS_TYPE_UINT32,
-		     &pid, DBUS_TYPE_INVALID) == FALSE) {
-			_E("Failed to get data: %s", error.message);
-			dbus_error_free(&error);
-			return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+		if (_app_launch_handler || _app_launch_handler2) {
+			const char *app_id = NULL;
+
+			if (dbus_message_get_args(message, &error,
+					DBUS_TYPE_UINT32, &pid,
+					DBUS_TYPE_STRING, &app_id,
+					DBUS_TYPE_INVALID) == FALSE) {
+				_E("Failed to get data: %s", error.message);
+				dbus_error_free(&error);
+				return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+			}
+
+			if (_app_launch_handler)
+				_app_launch_handler(pid, _app_launch_data);
+
+			if (_app_launch_handler2)
+				_app_launch_handler2(pid, app_id, _app_launch_data2);
 		}
-		if (_app_launch_handler)
-			_app_launch_handler(pid, _app_launch_data);
 	} else if (dbus_message_is_signal(
 	  message, interface, SYSTEM_SIGNAL_BOOTING_DONE)) {
 		if (_booting_done_handler)
 			_booting_done_handler(pid, _booting_done_data);
 	} else if (dbus_message_is_signal(
 	  message, interface, RESOURCED_SIGNAL_PROCESS_STATUS)) {
-		if (dbus_message_get_args(message, &error, DBUS_TYPE_INT32,&status,
-			DBUS_TYPE_INT32,&pid, DBUS_TYPE_INVALID) == FALSE) {
-			_E("Failed to get data: %s", error.message);
-			dbus_error_free(&error);
-			return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-		}
-		if (_status_handler)
+		if (_status_handler) {
+			if (dbus_message_get_args(message, &error,
+					DBUS_TYPE_INT32,&status,
+					DBUS_TYPE_INT32,&pid,
+					DBUS_TYPE_INVALID) == FALSE) {
+				_E("Failed to get data: %s", error.message);
+				dbus_error_free(&error);
+				return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+			}
 			_status_handler(pid, status, _status_data);
+		}
 	} else if (dbus_message_is_signal(
 	  message, interface, SYSTEM_SIGNAL_COOLDOWN_CHANGED)) {
-		if (dbus_message_get_args(message, &error, DBUS_TYPE_STRING, &cooldown_status,
-			DBUS_TYPE_INVALID) == FALSE) {
-			_E("Failed to get data: %s", error.message);
-			dbus_error_free(&error);
-			return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-		}
-		if (_cooldown_handler)
+		if (_cooldown_handler) {
+			if (dbus_message_get_args(message, &error,
+					DBUS_TYPE_STRING, &cooldown_status,
+					DBUS_TYPE_INVALID) == FALSE) {
+				_E("Failed to get data: %s", error.message);
+				dbus_error_free(&error);
+				return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+			}
 			_cooldown_handler(cooldown_status, _cooldown_data);
+		}
 	}
 
 	return DBUS_HANDLER_RESULT_HANDLED;
@@ -225,7 +245,7 @@ SLPAPI int aul_listen_app_dead_signal(int (*func) (int, void *), void *data)
 			_E("error app signal init");
 			return AUL_R_ERROR;
 		}
-	} else if (_app_launch_handler == NULL) {
+	} else if (_app_launch_handler == NULL && _app_launch_handler2 == NULL) {
 		if (__app_dbus_signal_handler_fini() < 0) {
 			_E("error app signal fini");
 			return AUL_R_ERROR;
@@ -244,7 +264,7 @@ SLPAPI int aul_listen_app_launch_signal(int (*func) (int, void *), void *data)
 			_E("error app signal init");
 			return AUL_R_ERROR;
 		}
-	} else if (_app_dead_handler == NULL) {
+	} else if (_app_launch_handler2 == NULL && _app_dead_handler == NULL) {
 		if (__app_dbus_signal_handler_fini() < 0) {
 			_E("error app signal fini");
 			return AUL_R_ERROR;
@@ -252,6 +272,26 @@ SLPAPI int aul_listen_app_launch_signal(int (*func) (int, void *), void *data)
 	}
 	_app_launch_handler = func;
 	_app_launch_data = data;
+
+	return AUL_R_OK;
+}
+
+SLPAPI int aul_listen_app_launch_signal_v2(int (*func) (int, const char *, void *), void *data)
+{
+	if (func) {
+		if (__app_dbus_signal_handler_init() < 0) {
+			_E("error app signal init");
+			return AUL_R_ERROR;
+		}
+	} else if (_app_launch_handler == NULL && _app_dead_handler == NULL) {
+		if (__app_dbus_signal_handler_fini() < 0) {
+			_E("error app signal fini");
+			return AUL_R_ERROR;
+		}
+	}
+
+	_app_launch_handler2 = func;
+	_app_launch_data2 = data;
 
 	return AUL_R_OK;
 }
@@ -321,6 +361,8 @@ SLPAPI int aul_update_freezer_status(int pid, const char* type)
 
 	dbus_error_init(&err);
 
+	_W("send_update_freezer_status, pid: %d, type: %s", pid, type);
+
 	conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
 	if (!conn) {
 		_E("Fail to dbus_bus_get : %s", err.message);
@@ -343,8 +385,6 @@ SLPAPI int aul_update_freezer_status(int pid, const char* type)
 		_E("Failed to append a D-Bus Message.");
 		ret = -1;
 	}
-
-	_D("Send a freezer signal pid: %d, type: %s", pid, type);
 
 	if (!dbus_connection_send(conn, msg, &serial)) {
 		_E("Failed to send a D-Bus Message.");
@@ -390,6 +430,8 @@ SLPAPI int aul_send_app_launch_request_signal(int pid, const char* appid, const 
 
 	__app_status_dbus_init();
 
+	_W("send_app_launch_signal, pid: %d, appid: %s", pid, appid);
+
 	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
 			AUL_APP_STATUS_DBUS_SIGNAL_INTERFACE,
 			AUL_APP_STATUS_DBUS_LAUNCH_REQUEST);
@@ -432,6 +474,8 @@ SLPAPI int aul_send_app_resume_request_signal(int pid, const char* appid, const 
 	int ret = -1;
 
 	__app_status_dbus_init();
+
+	_W("send_app_resume_signal, pid: %d, appid: %s", pid, appid);
 
 	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
 			AUL_APP_STATUS_DBUS_SIGNAL_INTERFACE,
@@ -544,6 +588,8 @@ SLPAPI int aul_send_app_status_change_signal(int pid, const char* appid, const c
 
 	int ret = -1;
 
+	_W("send_app_status_change_signal, pid: %d, appid: %s, status: %s", pid, appid, status);
+
 	__app_status_dbus_init();
 
 	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
@@ -641,6 +687,8 @@ SLPAPI int aul_send_app_group_signal(int owner_pid, int child_pid, const char *c
 
 	int ret = -1;
 
+	_W("send_app_group_signal, owner: %d, child: %d", owner_pid, child_pid);
+
 	__app_status_dbus_init();
 
 	msg = dbus_message_new_signal(AUL_APP_STATUS_DBUS_PATH,
@@ -686,4 +734,3 @@ end:
 
 	return ret;
 }
-

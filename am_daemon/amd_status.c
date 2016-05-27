@@ -59,13 +59,29 @@ GHashTable *app_running_cache = NULL;
 struct appinfomgr *_saf = NULL;
 
 #ifdef _APPFW_FEATURE_AMD_MODULE_LOG
-#define AMD_LOG_BUFFER_SIZE				10000
-#define AMD_LOG_BUFFER_STRING_SIZE		128
-#define AMD_LOG_FILE    			   "/var/log/amd.log"
+#define AMD_LOG_BUFFER_SIZE 10000
+#define AMD_LOG_BUFFER_STRING_SIZE 128
+#define AMD_LOG_FILE "/var/log/amd.log"
 
 static int log_index = 0;
 static int log_fd = 0;
 #endif
+
+static int __send_result_to_client(int clifd, int res)
+{
+	if (clifd < 0)
+		return -1;
+
+	if (send(clifd, &res, sizeof(int), MSG_NOSIGNAL) < 0) {
+		if (errno == EPIPE)
+			_E("send failed due to EPIPE.\n");
+		_E("send fail to client");
+	}
+
+	close(clifd);
+
+	return 0;
+}
 
 static app_status_info_t* __get_app_status_info(int pid)
 {
@@ -432,7 +448,7 @@ static Eina_Bool __app_terminate_timer_cb(void *data)
 	return ECORE_CALLBACK_CANCEL;
 }
 
-int _status_update_app_info_list(int pid, int status)
+int _status_update_app_info_list(int pid, int status, gboolean force)
 {
 	GSList *iter = NULL;
 	app_status_info_t *info_t = NULL;
@@ -454,7 +470,7 @@ int _status_update_app_info_list(int pid, int status)
 		}
 	}
 
-	app_group_set_status(pid, status);
+	app_group_set_status(pid, status, force);
 
 	return 0;
 }
@@ -716,10 +732,11 @@ int _status_send_running_appinfo(int fd)
 	app_pkt_t *pkt = NULL;
 	char tmp_pid[MAX_PID_STR_BUFSZ];
 
-	pkt = (app_pkt_t *) malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
-	if(!pkt) {
+	pkt = (app_pkt_t *)malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
+	if (!pkt) {
 		_E("malloc fail");
-		return 0;
+		__send_result_to_client(fd, -1);
+		return -1;
 	}
 
 	memset(pkt, 0, AUL_SOCK_MAXBUFF);
@@ -748,7 +765,7 @@ int _status_send_running_appinfo(int fd)
 		_E("send fail to client");
 	}
 
-	if(pkt)
+	if (pkt)
 		free(pkt);
 
 	close(fd);
@@ -885,10 +902,10 @@ int _status_send_running_appinfo_v2(int fd)
 	app_pkt_t *pkt = NULL;
 
 	pkt = (app_pkt_t *) malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
-	if(!pkt) {
+	if (!pkt) {
 		_E("malloc fail");
-		close(fd);
-		return 0;
+		__send_result_to_client(fd, -1);
+		return -1;
 	}
 
 	memset(pkt, 0, AUL_SOCK_MAXBUFF);
@@ -904,7 +921,7 @@ int _status_send_running_appinfo_v2(int fd)
 		_E("send fail to client");
 	}
 
-	if(pkt)
+	if (pkt)
 		free(pkt);
 
 	close(fd);
@@ -1058,7 +1075,7 @@ int _status_get_cmdline(int fd, int pid)
 	char *cmdline;
 
 	pkt = (app_pkt_t *) malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
-	if(!pkt) {
+	if (!pkt) {
 		_E("malloc fail");
 		close(fd);
 		return 0;
@@ -1107,9 +1124,10 @@ int _status_send_group_info(int fd)
 	char buf[2048];
 
 	pkt = (app_pkt_t *) malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
-	if(!pkt) {
+	if (!pkt) {
 		_E("malloc fail");
-		return 0;
+		__send_result_to_client(fd, -1);
+		return -1;
 	}
 
 	memset(pkt, 0, AUL_SOCK_MAXBUFF);
@@ -1244,7 +1262,7 @@ int _status_send_group_info(int fd)
 		_E("send fail to client");
 	}
 
-	if(pkt)
+	if (pkt)
 		free(pkt);
 
 	close(fd);

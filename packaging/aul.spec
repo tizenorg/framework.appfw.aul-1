@@ -49,6 +49,7 @@ BuildRequires: pkgconfig(cert-svc)
 %define appfw_feature_data_control 1
 %define appfw_feature_debug_launchpad 1
 %define appfw_feature_app_control_lite 0
+%define appfw_feature_terminate_unmanageable_app 0
 %if "%{?tizen_profile_name}" == "wearable"
 %define appfw_feature_bg_process_limit 0
 %define appfw_feature_app_checker 0
@@ -196,7 +197,9 @@ _APPFW_FEATURE_EFFECTIVE_APPID=ON
 %if 0%{?appfw_feature_private_service}
 _APPFW_FEATURE_PRIVATE_SERVICE=ON
 %endif
-
+%if 0%{?appfw_feature_terminate_unmanageable_app}
+_APPFW_FEATURE_TERMINATE_UNMANAGEABLE_APP=ON
+%endif
 
 cmake -DCMAKE_INSTALL_PREFIX=%{_prefix} \
 	-D_APPFW_FEATURE_PROCESS_POOL:BOOL=${_APPFW_FEATURE_PROCESS_POOL} \
@@ -224,6 +227,7 @@ cmake -DCMAKE_INSTALL_PREFIX=%{_prefix} \
 	-D_APPFW_FEATURE_FAKE_EFFECT:BOOL=${_APPFW_FEATURE_FAKE_EFFECT} \
 	-D_APPFW_FEATURE_EFFECTIVE_APPID:BOOL=${_APPFW_FEATURE_EFFECTIVE_APPID} \
 	-D_APPFW_FEATURE_PRIVATE_SERVICE:BOOL=${_APPFW_FEATURE_PRIVATE_SERVICE} \
+	-D_APPFW_FEATURE_TERMINATE_UNMANAGEABLE_APP:BOOL=${_APPFW_FEATURE_TERMINATE_UNMANAGEABLE_APP} \
 	.
 
 make %{?jobs:-j%jobs}
