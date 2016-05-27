@@ -66,6 +66,9 @@ static gboolean __request_handler(gpointer data);
 
 static int __send_result_to_client(int fd, int res)
 {
+	if (fd < 0)
+		return -1;
+
 	_D("__send_result_to_client, res: %d", fd, res);
 
 	if (send(fd, &res, sizeof(int), MSG_NOSIGNAL) < 0) {
@@ -81,9 +84,9 @@ static int __send_result_to_client(int fd, int res)
 
 static void __real_send(int clifd, int ret)
 {
-	if(clifd <= 0) {
+	if (clifd < 0)
 		return;
-	}
+
 	if (send(clifd, &ret, sizeof(int), MSG_NOSIGNAL) < 0) {
 		if (errno == EPIPE) {
 			_E("send failed due to EPIPE.\n");
@@ -154,12 +157,15 @@ static int __app_process_by_pid(int cmd,
 	int ret = -1;
 	int dummy;
 
-	if (pkg_name == NULL)
+	if (pkg_name == NULL) {
+		close(clifd);
 		return -1;
+	}
 
 	pid = atoi(pkg_name);
 	if (pid <= 1) {
 		_E("invalid pid");
+		close(clifd);
 		return -1;
 	}
 
@@ -167,6 +173,7 @@ static int __app_process_by_pid(int cmd,
 		char buf[512];
 		if (_status_get_pkgname_bypid(pid, buf, 512) == -1) {
 			_E("request for unknown pid. It might not be a pid of app: %d", pid);
+			__real_send(clifd, -1);
 			return -1;
 		}
 	}

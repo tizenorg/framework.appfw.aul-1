@@ -796,6 +796,7 @@ static gboolean __recv_timeout_handler(gpointer data)
 {
 	struct reply_info *r_info = (struct reply_info *) data;
 	int fd = r_info->gpollfd->fd;
+	int ret = -EAGAIN;
 
 	_E("application is not responding : pid(%d) cmd(%d)", r_info->pid, r_info->cmd);
 
@@ -817,11 +818,13 @@ static gboolean __recv_timeout_handler(gpointer data)
 			_E("fail to killing - %d\n", r_info->pid);
 			__real_send(r_info->clifd, -1);
 			return -1;
+		} else {
+			ret = 0;
 		}
-		__real_send(r_info->clifd, 0);
 		break;
 	}
 
+	__real_send(r_info->clifd, ret);
 	g_source_remove_poll(r_info->src, r_info->gpollfd);
 	g_source_destroy(r_info->src);
 	g_free(r_info->gpollfd);
@@ -842,6 +845,8 @@ static void __set_reply_handler(int fd, int pid, int clifd, int cmd)
 	if (gpollfd == NULL) {
 		_E("out of memory");
 		g_source_unref(src);
+		close(fd);
+		close(clifd);
 		return;
 	}
 
@@ -853,6 +858,8 @@ static void __set_reply_handler(int fd, int pid, int clifd, int cmd)
 		_E("out of memory");
 		g_free(gpollfd);
 		g_source_unref(src);
+		close(fd);
+		close(clifd);
 		return;
 	}
 
@@ -1848,6 +1855,8 @@ int _start_app(char* appid, bundle* kb, int cmd, int caller_pid, uid_t caller_ui
 		if (pid > 0) {
 			if ((ret = __nofork_processing(cmd, pid, kb, fd)) < 0) {
 				pid = ret;
+			} else {
+				delay_reply = 1;
 			}
 		} else if (cmd != APP_RESUME) {
 #ifdef _APPFW_FEATURE_DEBUG_LAUNCHPAD

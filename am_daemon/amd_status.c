@@ -246,6 +246,7 @@ int _status_send_running_appinfo(int fd)
 	pkt = (app_pkt_t *) malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
 	if(!pkt) {
 		_E("malloc fail");
+		close(fd);
 		return 0;
 	}
 

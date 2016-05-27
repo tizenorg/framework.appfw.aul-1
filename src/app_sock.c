@@ -40,13 +40,18 @@ static int __connect_client_sock(int sockfd, const struct sockaddr *saptr, sockl
 static inline void __set_sock_option(int fd, int cli)
 {
 	int size;
+	int flag;
 	struct timeval tv = { 5, 200 * 1000 };	/*  5.2 sec */
 
 	size = AUL_SOCK_MAXBUFF;
 	setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
 	setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
-	if (cli)
+	if (cli) {
 		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		flag = fcntl(fd, F_GETFD);
+		flag |= FD_CLOEXEC;
+		fcntl(fd, F_SETFD, flag);
+	}
 }
 
 int __create_server_sock(int pid)
@@ -282,6 +287,7 @@ int __app_send_raw(int pid, int cmd, unsigned char *kb_data, int datalen)
 	pkt = (app_pkt_t *) malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
 	if (NULL == pkt) {
 		_E("Malloc Failed!");
+		close(fd);
 		return -ENOMEM;
 	}
 	memset(pkt, 0, AUL_SOCK_MAXBUFF);
@@ -370,6 +376,7 @@ int __app_send_raw_with_noreply(int pid, int cmd, unsigned char *kb_data, int da
 	pkt = (app_pkt_t *) malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
 	if (NULL == pkt) {
 		_E("Malloc Failed!");
+		close(fd);
 		return -ENOMEM;
 	}
 	memset(pkt, 0, AUL_SOCK_MAXBUFF);
@@ -441,6 +448,7 @@ int __app_send_raw_with_delay_reply(int pid, int cmd, unsigned char *kb_data, in
 	pkt = (app_pkt_t *) malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
 	if (NULL == pkt) {
 		_E("Malloc Failed!");
+		close(fd);
 		return -ENOMEM;
 	}
 	memset(pkt, 0, AUL_SOCK_MAXBUFF);
@@ -576,6 +584,7 @@ app_pkt_t *__app_send_cmd_with_result(int pid, int cmd, unsigned char *kb_data, 
 	pkt = (app_pkt_t *) malloc(sizeof(char) * AUL_SOCK_MAXBUFF);
 	if (NULL == pkt) {
 		_E("Malloc Failed!");
+		close(fd);
 		return NULL;
 	}
 	memset(pkt, 0, AUL_SOCK_MAXBUFF);
